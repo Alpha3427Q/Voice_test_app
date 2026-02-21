@@ -1,9 +1,9 @@
 [versions]
 agp = "8.4.2"
 kotlin = "2.1.20"
-androidx-core-ktx = "1.17.0"
-androidx-activity-compose = "1.12.4"
-androidx-lifecycle = "2.9.4"
+androidx-core-ktx = "1.13.0"
+androidx-activity-compose = "1.9.0"
+androidx-lifecycle = "2.8.0"
 androidx-compose-bom = "2026.01.01"
 androidx-datastore = "1.1.7"
 kotlinx-coroutines = "1.10.2"
