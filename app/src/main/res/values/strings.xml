@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">Project Alice</string>
+    <string name="engine_channel_name">Alice Background Engine</string>
+    <string name="engine_notification_title">Alice is running</string>
+    <string name="engine_notification_text">Wake-word and microphone monitoring active</string>
+</resources>
