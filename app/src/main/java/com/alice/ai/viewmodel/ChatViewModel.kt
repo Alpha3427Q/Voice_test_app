@@ -303,7 +303,7 @@ class ChatViewModel(
     }
 
     private fun resolveOllamaApiKey(): String {
-        val storedKey = settingsRepository?.getOllamaApiKey()?.trim().orEmpty()
+        val storedKey = settingsRepository?.ollamaApiKey?.trim().orEmpty()
         return storedKey.ifBlank { _uiState.value.ollamaApiKey.trim() }
     }
 

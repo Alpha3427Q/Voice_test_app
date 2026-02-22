@@ -107,7 +107,7 @@ private fun AliceApp(
     }
 
     val initialOllamaUrl = remember { settingsRepository.getOllamaServerUrl() }
-    val initialOllamaApiKey = remember { settingsRepository.getOllamaApiKey() }
+    val initialOllamaApiKey = remember { settingsRepository.ollamaApiKey }
     val initialOfflineModel = remember { settingsRepository.getOfflineGgufUri() }
     val initialSelectedModel = remember { settingsRepository.getSelectedModel() }
     var ollamaServerUrlDraft by rememberSaveable {

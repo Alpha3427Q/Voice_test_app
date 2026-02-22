@@ -16,11 +16,8 @@ class SettingsRepository(
     fun getOllamaServerUrl(): String =
         sharedPreferences.getString(KEY_OLLAMA_URL, "").orEmpty()
 
-    fun getOllamaApiKey(): String =
-        sharedPreferences.getString(KEY_OLLAMA_API_KEY, "").orEmpty()
-
     val ollamaApiKey: String
-        get() = getOllamaApiKey()
+        get() = sharedPreferences.getString(KEY_OLLAMA_API_KEY, "").orEmpty()
 
     fun getTtsApiUrl(defaultValue: String): String =
         sharedPreferences.getString(KEY_TTS_URL, defaultValue).orEmpty().ifBlank { defaultValue }
