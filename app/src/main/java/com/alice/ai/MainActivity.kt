@@ -44,6 +44,8 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.alice.ai.data.settings.SettingsRepository
+import com.alice.ai.data.settings.StoredSettings
 import com.alice.ai.ui.chat.ChatScreen
 import com.alice.ai.ui.settings.SettingsScreen
 import com.alice.ai.viewmodel.ChatViewModel
@@ -57,10 +59,6 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
 private const val PREFS_NAME = "alice_settings"
-private const val KEY_OLLAMA_URL = "ollama_server_url"
-private const val KEY_TTS_URL = "tts_api_url"
-private const val KEY_GGUF_URI = "offline_gguf_uri"
-private const val KEY_SELECTED_MODEL = "selected_model"
 private const val DEFAULT_TTS_URL = "https://lonekirito-asuna3456.hf.space/speak"
 
 private val STORAGE_PERMISSIONS = arrayOf(
@@ -97,6 +95,7 @@ private fun AliceApp(
     chatViewModel: ChatViewModel
 ) {
     val context = LocalContext.current
+    val settingsRepository = remember { SettingsRepository(prefs) }
     val navController = rememberNavController()
     val scope = rememberCoroutineScope()
     val httpClient = remember { OkHttpClient() }
@@ -104,21 +103,27 @@ private fun AliceApp(
     val uiState by chatViewModel.uiState.collectAsState()
 
     var ttsApiUrl by rememberSaveable {
-        mutableStateOf(prefs.getString(KEY_TTS_URL, DEFAULT_TTS_URL) ?: DEFAULT_TTS_URL)
+        mutableStateOf(settingsRepository.getTtsApiUrl(DEFAULT_TTS_URL))
     }
 
-    val initialOllamaUrl = remember { prefs.getString(KEY_OLLAMA_URL, "") ?: "" }
-    val initialOfflineModel = remember { prefs.getString(KEY_GGUF_URI, "") ?: "" }
-    val initialSelectedModel = remember { prefs.getString(KEY_SELECTED_MODEL, "") ?: "" }
+    val initialOllamaUrl = remember { settingsRepository.getOllamaServerUrl() }
+    val initialOllamaApiKey = remember { settingsRepository.getOllamaApiKey() }
+    val initialOfflineModel = remember { settingsRepository.getOfflineGgufUri() }
+    val initialSelectedModel = remember { settingsRepository.getSelectedModel() }
     var ollamaServerUrlDraft by rememberSaveable {
         mutableStateOf(initialOllamaUrl)
+    }
+    var ollamaApiKeyDraft by rememberSaveable {
+        mutableStateOf(initialOllamaApiKey)
     }
     var hasRestoredSelection by rememberSaveable {
         mutableStateOf(initialSelectedModel.isBlank())
     }
 
     LaunchedEffect(Unit) {
+        chatViewModel.attachSettingsRepository(settingsRepository)
         chatViewModel.updateOllamaServerUrl(initialOllamaUrl)
+        chatViewModel.updateOllamaApiKey(initialOllamaApiKey)
         chatViewModel.updateOfflineModelPath(initialOfflineModel)
         if (initialOllamaUrl.isNotBlank()) {
             chatViewModel.refreshOnlineModels()
@@ -229,6 +234,7 @@ private fun AliceApp(
                     availableModels = uiState.availableModels,
                     isGenerating = uiState.isGenerating,
                     activeContextCount = uiState.activeContext.size,
+                    statusMessage = uiState.statusMessage,
                     errorMessage = uiState.errorMessage,
                     onInputTextChange = chatViewModel::onInputChanged,
                     onModelSelected = chatViewModel::selectModel,
@@ -282,9 +288,11 @@ private fun AliceApp(
             composable(AliceDestination.Settings.route) {
                 SettingsScreen(
                     ollamaServerUrl = ollamaServerUrlDraft,
+                    ollamaApiKey = ollamaApiKeyDraft,
                     ttsApiUrl = ttsApiUrl,
                     ggufModelPath = uiState.offlineModelPath,
                     onOllamaServerUrlChange = { ollamaServerUrlDraft = it },
+                    onOllamaApiKeyChange = { ollamaApiKeyDraft = it },
                     onTtsApiUrlChange = { ttsApiUrl = it },
                     onAddModelClick = { storagePermissionLauncher.launch(STORAGE_PERMISSIONS) },
                     onRemoveModelClick = {
@@ -293,16 +301,24 @@ private fun AliceApp(
                             .show()
                     },
                     onSaveClick = {
-                        chatViewModel.updateOllamaServerUrl(ollamaServerUrlDraft)
-                        if (ollamaServerUrlDraft.isNotBlank()) {
+                        val trimmedOllamaUrl = ollamaServerUrlDraft.trim()
+                        val trimmedApiKey = ollamaApiKeyDraft.trim()
+                        val trimmedTtsUrl = ttsApiUrl.trim()
+
+                        settingsRepository.save(
+                            StoredSettings(
+                                ollamaServerUrl = trimmedOllamaUrl,
+                                ollamaApiKey = trimmedApiKey,
+                                ttsApiUrl = trimmedTtsUrl,
+                                offlineGgufUri = uiState.offlineModelPath,
+                                selectedModel = uiState.selectedModel
+                            )
+                        )
+                        chatViewModel.updateOllamaApiKey(trimmedApiKey)
+                        chatViewModel.updateOllamaServerUrl(trimmedOllamaUrl)
+                        if (trimmedOllamaUrl.isNotBlank()) {
                             chatViewModel.refreshOnlineModels()
                         }
-                        prefs.edit()
-                            .putString(KEY_OLLAMA_URL, ollamaServerUrlDraft.trim())
-                            .putString(KEY_TTS_URL, ttsApiUrl.trim())
-                            .putString(KEY_GGUF_URI, uiState.offlineModelPath)
-                            .putString(KEY_SELECTED_MODEL, uiState.selectedModel)
-                            .apply()
                         Toast.makeText(context, "Settings saved", Toast.LENGTH_SHORT).show()
                     }
                 )

@@ -22,9 +22,11 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun SettingsScreen(
     ollamaServerUrl: String,
+    ollamaApiKey: String,
     ttsApiUrl: String,
     ggufModelPath: String,
     onOllamaServerUrlChange: (String) -> Unit,
+    onOllamaApiKeyChange: (String) -> Unit,
     onTtsApiUrlChange: (String) -> Unit,
     onAddModelClick: () -> Unit,
     onRemoveModelClick: () -> Unit,
@@ -52,6 +54,13 @@ fun SettingsScreen(
             onValueChange = onOllamaServerUrlChange,
             modifier = Modifier.fillMaxWidth(),
             label = { Text("Ollama Server URL") },
+            singleLine = true
+        )
+        OutlinedTextField(
+            value = ollamaApiKey,
+            onValueChange = onOllamaApiKeyChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Ollama API Key (optional)") },
             singleLine = true
         )
 

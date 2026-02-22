@@ -74,6 +74,7 @@ fun ChatScreen(
     availableModels: List<String>,
     isGenerating: Boolean,
     activeContextCount: Int,
+    statusMessage: String?,
     errorMessage: String?,
     onInputTextChange: (String) -> Unit,
     onModelSelected: (String) -> Unit,
@@ -129,11 +130,12 @@ fun ChatScreen(
             contentPadding = PaddingValues(vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            if (activeContextCount > 0 || isGenerating || errorMessage != null) {
+            if (activeContextCount > 0 || isGenerating || statusMessage != null || errorMessage != null) {
                 item(key = "status") {
                     ChatStatusCard(
                         contextSize = activeContextCount,
                         isGenerating = isGenerating,
+                        statusMessage = statusMessage,
                         errorMessage = errorMessage,
                         onClearError = onClearError
                     )
@@ -224,6 +226,7 @@ private fun ChatInputBar(
 private fun ChatStatusCard(
     contextSize: Int,
     isGenerating: Boolean,
+    statusMessage: String?,
     errorMessage: String?,
     onClearError: () -> Unit
 ) {
@@ -246,6 +249,14 @@ private fun ChatStatusCard(
             if (isGenerating) {
                 Text(
                     text = "Alice is generating a reply...",
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+
+            if (statusMessage != null) {
+                Text(
+                    text = statusMessage,
                     color = MaterialTheme.colorScheme.primary,
                     style = MaterialTheme.typography.bodySmall
                 )
