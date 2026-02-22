@@ -1,51 +1,55 @@
-# PROJECT ALICE: Master Architecture Spec & Blueprint
+# Alice AI - Master Blueprint & Architecture Manifesto
 
-## 1. Core Architecture (MVVM)
-* **Language:** Kotlin (Version 2.1.20)
-* **UI Framework:** Jetpack Compose (BOM 2026.01.01)
-* **Architecture:** Strict MVVM. The UI (View) only observes StateFlows from ViewModels. Background services communicate with ViewModels via BroadcastReceivers or singleton repositories.
-* **App Icon:** The custom launcher icon is located at `res/mipmap-xxhdpi/ic_launcher.png`. Ensure the `AndroidManifest.xml` is configured to use `@mipmap/ic_launcher`.
+## 1. Project Overview & Build Rules
+* **App Name:** Alice AI
+* **Minimum SDK:** API 33 (Android 13 / 13 Lite)
+* **Target/Compile SDK:** API 34 (STRICT RULE: Do not use SDK 35. Do not use AGP 8.6.0+. Maintain AGP 8.4.2 and Compose BOM 2024.04.01 to guarantee GitHub Actions compatibility).
+* **Architecture Support:** `armeabi-v7a` (32-bit) and `arm64-v8a` (64-bit).
+* **Theme:** Professional Dark Mode exclusively. Cool, sleek background aesthetics.
+* **Core Tech Stack:** Jetpack Compose (UI), Android NDK / `llama.cpp` (Offline Vulkan Engine), Retrofit/OkHttp (Online Ollama & TTS network calls).
 
-## 2. CI/CD & GitHub Actions Compatibility
-* **Gradle Wrapper:** The project MUST include a functional Gradle Wrapper (`gradlew`). Do not rely on local system Gradle installations.
-* **Environment Agnostic:** Never use local absolute paths (like `/root/` or `/sdcard/`) in the `build.gradle.kts` files. Everything must be relative to the project root.
-* **Action Setup:** When building workflows, strictly use `gradle/actions/setup-gradle` to handle artifact caching and JDK setup (Temurin 17) to optimize cloud build times.
+## 2. The Dual-Engine AI System
+The app features two distinct processing modes that share a unified chat memory:
 
-## 3. Feature 1: The Engine (Background Service)
-* Must be a `ForegroundService` with a persistent silent notification to prevent Android from killing it.
-* **Wake Word:** Uses Picovoice Porcupine to listen for `Hey-Alice_en_android_v4_0_0.ppn` from the `assets` folder.
-* **STT Logic:** Upon trigger, switch to Google's streaming Speech-to-Text (`SpeechRecognizer`). Wait exactly 1.5 seconds after talking stops before processing. If silence lasts for 5 seconds, disable STT and return to `.ppn` wake word listening.
-* **Execution:** Stream the finalized STT text to the designated assistant URL, wait for response, and stream audio playback.
+### A. Online Mode (Ollama Cloud)
+* Connects to a user-defined Ollama server URL.
+* Queries the server for available models and populates the Model Selector dropdown.
+* Handles standard REST API JSON requests matching the Ollama API specification.
 
-## 4. Feature 2: Call & Microphone Detection (The Bouncer)
-* Use `AudioManager.OnAudioFocusChangeListener` and `TelephonyManager`.
-* If a normal call, WhatsApp, Telegram, or any other app requests the microphone, instantly pause the `.ppn` listener and surrender audio focus. Automatically resume listening only when the call/usage ends.
+### B. Offline Mode (Local Vulkan GGUF)
+* Uses a custom JNI (Java Native Interface) bridge to `llama.cpp` compiled with `-DGGML_VULKAN=ON` for GPU acceleration.
+* **Strict RAM Rule:** The `.gguf` model selected in Settings must NEVER be loaded into device memory until the user explicitly selects it from the top Model Selection dropdown in the Chat UI. Unselecting it must immediately trigger a memory free/unload event.
 
-## 5. Feature 3: The Overlay UI (System Alert Window)
-* A system-wide floating window (`SYSTEM_ALERT_WINDOW`).
-* **Visuals:** Translucent/blurred background. A centralized, animated, colorful Siri-style orb.
-* **Data:** A Google Assistant-style pill bar below the orb displaying real-time STT input and streaming AI text output. Auto-plays AI audio while displaying text.
+### C. Cross-Mode Memory & Context
+* **Memory Pool:** The app maintains the last 7 messages (or a lightweight hybrid RAG implementation) as active context. 
+* **Seamless Switching:** If a user switches from an Online model to an Offline model mid-conversation, the 7-message context is perfectly preserved and passed to the new engine.
+* **Dynamic System Prompt:** Every generation must silently prepend this exact prompt:
+  `"Your name is Alice an AI assistant created by Adwaith also known as Aromal and Alpha. Current time is [DYNAMIC_TIME] and date is [DYNAMIC_DATE] and day is [DYNAMIC_DAY]."`
 
-## 6. Feature 4: Context Injection (App Usage)
-* Use `UsageStatsManager` to gather the currently open app's package name and usage details when the AI requests screen context.
+## 3. UI/UX Architecture (Jetpack Compose)
 
-## 7. Feature 5: Main App UI (Ollama Chat Command Center)
-* **UI:** Jetpack Compose chat interface. Includes a model switcher dropdown in the top bar.
-* **Input:** Text field with a `+` button to attach files, images, and audio.
-* **Processing:** Set `stream = true` for Ollama. Output must render instantly in chunks.
-* **Formatting:** Full Markdown support (bolding, lists, etc.) and real code blocks with a "Copy Code" button. Include message timestamps.
-* **Memory:** Hybrid RAG fallback (send the last 7 messages in the context window).
-* **Persona:** Inject system prompt: "I AM ALICE AN AI ASSISTANT CREATED BY ADWAITH ALSO KNOWN AS ALPHA AND AROMAL."
-* **Gestures:** Long-press on AI replies opens a popup with "Copy" and "Read Aloud". "Read Aloud" sends text to a TTS URL, plays the audio, and shows a top-bar play/pause controller.
+### A. Main Chat Screen
+* **Top Bar:** * Features a "+" button for uploading files/images (Multipart processing ready).
+  * A Model Selection dropdown pill (shows available Ollama models + the loaded Offline model).
+* **Chat Feed (`LazyColumn`):**
+  * Distinct, professional bubble styling for User vs. Alice.
+  * **Markdown Support:** Full rendering for `**bold**`, italics, and structured code blocks. 
+  * **Code Blocks:** Must feature a dedicated "Copy" button inside the code UI frame.
+  * **Long-Click Actions:** Long-pressing Alice's reply opens a context menu with "Copy" and "Read Aloud" (triggers TTS).
+* **Bottom Bar:** Sleek text input field with a highly visible "Send" icon button.
 
-## 8. Feature 6: N8N Webhook Chat UI (Asynchronous)
-* A separate chat tab functioning like WhatsApp for webhook-based N8N interactions.
-* **Logic:** User sends message/media -> pushed to N8N webhook -> waits for N8N to process.
-* **Reception:** N8N sends back text/audio. App triggers a standard Android system notification.
-* **Media:** Received audio does *not* auto-play. It appears as a playable audio bubble with a Play/Pause button. Chat history is saved locally (Room Database) permanently.
+### B. Settings Screen (Accessed via Bottom Slide/Navigation)
+* **Storage Permission Gate:** Requests necessary Android 13+ storage permissions to read local `.gguf` files.
+* **Offline Engine Config:** * "Add Model" button (opens Android file picker to select a GGUF file).
+  * "Remove Model" button (deletes the path from SharedPreferences and forces a RAM unload).
+* **Online Engine Config:**
+  * OutlinedTextField for "Ollama Server URL".
+* **Audio Config:**
+  * OutlinedTextField for "TTS API URL".
+* **Save Action:** A prominent Save button to lock in configurations to `DataStore` or `SharedPreferences`.
 
-## 9. Feature 7: Settings & Permissions Switchboard
-* **Storage:** Use Jetpack DataStore (Preferences).
-* **Toggles:** Master switch for Background Listening.
-* **Inputs:** Text fields for TTS URL, N8N Webhook URL, Ollama URL, etc.
-* **Gatekeeper:** On every app launch, verify all permissions (`RECORD_AUDIO`, `SYSTEM_ALERT_WINDOW`, `READ_PHONE_STATE`, `PACKAGE_USAGE_STATS`, Battery Optimization exemption). Prompt user for missing permissions immediately.
+## 4. Text-To-Speech (TTS) Engine
+* Triggered via the "Read Aloud" long-click action.
+* **API Call Structure:** Performs an HTTP GET request to the configured TTS URL (Default: `https://lonekirito-asuna3456.hf.space/speak`).
+* **Query Params:** URL-encodes the AI's response text (`?text=...`).
+* **Audio Handling:** Downloads/streams the resulting `.wav` binary and plays it using Android's native `MediaPlayer`.
