@@ -49,6 +49,7 @@ import com.alice.ai.data.settings.StoredSettings
 import com.alice.ai.ui.chat.ChatScreen
 import com.alice.ai.ui.settings.SettingsScreen
 import com.alice.ai.viewmodel.ChatViewModel
+import com.alice.ai.viewmodel.OnlineSettingsValidationResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -110,6 +111,9 @@ private fun AliceApp(
     val initialOllamaApiKey = remember { settingsRepository.ollamaApiKey }
     val initialOfflineModel = remember { settingsRepository.getOfflineGgufUri() }
     val initialSelectedModel = remember { settingsRepository.getSelectedModel() }
+    val normalizedInitialSelectedModel = remember {
+        initialSelectedModel.removePrefix("Online: ").trim()
+    }
     var ollamaServerUrlDraft by rememberSaveable {
         mutableStateOf(initialOllamaUrl)
     }
@@ -121,6 +125,7 @@ private fun AliceApp(
     }
 
     LaunchedEffect(Unit) {
+        chatViewModel.attachAppContext(context)
         chatViewModel.attachSettingsRepository(settingsRepository)
         chatViewModel.updateOllamaServerUrl(initialOllamaUrl)
         chatViewModel.updateOllamaApiKey(initialOllamaApiKey)
@@ -130,12 +135,15 @@ private fun AliceApp(
         }
     }
 
-    LaunchedEffect(initialSelectedModel, uiState.availableModels, hasRestoredSelection) {
+    LaunchedEffect(normalizedInitialSelectedModel, uiState.availableModels, hasRestoredSelection) {
         if (hasRestoredSelection || uiState.availableModels.isEmpty()) {
             return@LaunchedEffect
         }
-        if (initialSelectedModel in uiState.availableModels) {
-            chatViewModel.selectModel(initialSelectedModel)
+        if (
+            normalizedInitialSelectedModel in uiState.availableModels &&
+            !normalizedInitialSelectedModel.startsWith("Offline: ")
+        ) {
+            chatViewModel.selectModel(normalizedInitialSelectedModel)
         }
         hasRestoredSelection = true
     }
@@ -238,6 +246,7 @@ private fun AliceApp(
                     errorMessage = uiState.errorMessage,
                     onInputTextChange = chatViewModel::onInputChanged,
                     onModelSelected = chatViewModel::selectModel,
+                    onModelDropdownOpened = chatViewModel::onModelDropdownOpened,
                     onUploadClick = { uploadLauncher.launch("*/*") },
                     onSendClick = chatViewModel::sendMessage,
                     onClearError = chatViewModel::clearError,
@@ -305,21 +314,41 @@ private fun AliceApp(
                         val trimmedApiKey = ollamaApiKeyDraft.trim()
                         val trimmedTtsUrl = ttsApiUrl.trim()
 
-                        settingsRepository.save(
-                            StoredSettings(
-                                ollamaServerUrl = trimmedOllamaUrl,
-                                ollamaApiKey = trimmedApiKey,
-                                ttsApiUrl = trimmedTtsUrl,
-                                offlineGgufUri = uiState.offlineModelPath,
-                                selectedModel = uiState.selectedModel
-                            )
-                        )
-                        chatViewModel.updateOllamaApiKey(trimmedApiKey)
-                        chatViewModel.updateOllamaServerUrl(trimmedOllamaUrl)
-                        if (trimmedOllamaUrl.isNotBlank()) {
-                            chatViewModel.refreshOnlineModels()
+                        scope.launch {
+                            when (
+                                val validation = chatViewModel.validateOnlineSettings(
+                                    ollamaUrl = trimmedOllamaUrl,
+                                    ollamaApiKey = trimmedApiKey
+                                )
+                            ) {
+                                OnlineSettingsValidationResult.Success -> {
+                                    settingsRepository.save(
+                                        StoredSettings(
+                                            ollamaServerUrl = trimmedOllamaUrl,
+                                            ollamaApiKey = trimmedApiKey,
+                                            ttsApiUrl = trimmedTtsUrl,
+                                            offlineGgufUri = uiState.offlineModelPath,
+                                            selectedModel = uiState.selectedModel
+                                        )
+                                    )
+                                    chatViewModel.updateOllamaApiKey(trimmedApiKey)
+                                    chatViewModel.updateOllamaServerUrl(trimmedOllamaUrl)
+                                    if (trimmedOllamaUrl.isNotBlank()) {
+                                        chatViewModel.refreshOnlineModels()
+                                    }
+                                    val successMessage = if (trimmedOllamaUrl.isBlank()) {
+                                        "Settings saved"
+                                    } else {
+                                        "Connection successful"
+                                    }
+                                    Toast.makeText(context, successMessage, Toast.LENGTH_SHORT).show()
+                                }
+
+                                is OnlineSettingsValidationResult.Failure -> {
+                                    Toast.makeText(context, validation.message, Toast.LENGTH_SHORT).show()
+                                }
+                            }
                         }
-                        Toast.makeText(context, "Settings saved", Toast.LENGTH_SHORT).show()
                     }
                 )
             }

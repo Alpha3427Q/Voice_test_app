@@ -15,9 +15,12 @@ add_library(
     native-lib.cpp
 )
 
-# Ready for upcoming llama.cpp integration:
-# add_subdirectory(llama.cpp)
-# target_link_libraries(native-lib PRIVATE llama)
+# If llama.cpp source is present in this project, link it directly.
+if (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/CMakeLists.txt)
+    add_subdirectory(llama.cpp)
+    target_link_libraries(native-lib PRIVATE llama)
+    target_compile_definitions(native-lib PRIVATE ALICE_LLAMA_CPP_LINKED=1)
+endif()
 
 find_library(log-lib log)
 

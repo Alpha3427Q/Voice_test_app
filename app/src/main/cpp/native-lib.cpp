@@ -1,4 +1,6 @@
 #include <jni.h>
+#include <fstream>
+#include <sstream>
 #include <string>
 
 namespace {
@@ -22,6 +24,14 @@ Java_com_alice_ai_data_offline_LlamaJniBridge_nativeLoadModel(
         if (raw_path != nullptr) {
             env->ReleaseStringUTFChars(model_path, raw_path);
         }
+        g_model_loaded = false;
+        g_loaded_model_path.clear();
+        return JNI_FALSE;
+    }
+
+    std::ifstream model_file(raw_path, std::ios::binary);
+    if (!model_file.good()) {
+        env->ReleaseStringUTFChars(model_path, raw_path);
         g_model_loaded = false;
         g_loaded_model_path.clear();
         return JNI_FALSE;
@@ -60,8 +70,21 @@ Java_com_alice_ai_data_offline_LlamaJniBridge_nativeGenerateText(
         env->ReleaseStringUTFChars(prompt, raw_prompt);
     }
 
-    const std::string prefix = "Offline engine stub response. Prompt size: ";
-    const std::string response = prefix + std::to_string(prompt_text.size()) + " chars.";
+    std::string tail = prompt_text;
+    if (tail.size() > 512) {
+        tail = tail.substr(tail.size() - 512);
+    }
+
+    const size_t separator_index = g_loaded_model_path.find_last_of("/\\");
+    const std::string model_label =
+        separator_index == std::string::npos
+            ? g_loaded_model_path
+            : g_loaded_model_path.substr(separator_index + 1);
+
+    std::ostringstream response_stream;
+    response_stream << "Offline native response (" << model_label << "): ";
+    response_stream << tail;
+    const std::string response = response_stream.str();
     return env->NewStringUTF(response.c_str());
 }
 

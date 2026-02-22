@@ -1,19 +1,23 @@
 package com.alice.ai.viewmodel
 
+import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.alice.ai.data.model.ModelPathResult
+import com.alice.ai.data.model.ModelRepository
 import com.alice.ai.data.offline.LlamaJniBridge
-import com.alice.ai.data.offline.OfflineEngineManager
-import com.alice.ai.data.offline.OfflineEngineResult
-import com.alice.ai.data.online.OllamaApi
-import com.alice.ai.data.online.OllamaApiFactory
-import com.alice.ai.data.online.OllamaChatRequest
+import com.alice.ai.data.offline.OfflineLlamaEngine
+import com.alice.ai.data.offline.OfflineLlamaError
+import com.alice.ai.data.offline.OfflineLlamaGenerateResult
+import com.alice.ai.data.offline.OfflineLlamaResult
+import com.alice.ai.data.online.OllamaChatStreamResult
+import com.alice.ai.data.online.OllamaConnectionResult
 import com.alice.ai.data.online.OllamaMessage
+import com.alice.ai.data.online.OnlineOllamaService
 import com.alice.ai.data.settings.SettingsRepository
 import com.alice.ai.ui.chat.ChatMessage
 import com.alice.ai.ui.chat.ChatRole
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,16 +25,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
 import java.time.Clock
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 private const val TAG = "ChatViewModel"
-private const val ONLINE_PREFIX = "Online: "
 private const val OFFLINE_PREFIX = "Offline: "
+private const val LEGACY_ONLINE_PREFIX = "Online: "
 private const val DEFAULT_ONLINE_MODEL = "llama3"
 private const val CONTEXT_WINDOW_SIZE = 7
 private const val MAX_STORED_MESSAGES = 200
@@ -44,6 +46,11 @@ enum class EngineMode {
     Offline
 }
 
+sealed class OnlineSettingsValidationResult {
+    data object Success : OnlineSettingsValidationResult()
+    data class Failure(val message: String) : OnlineSettingsValidationResult()
+}
+
 data class ChatUiState(
     val messages: List<ChatMessage> = emptyList(),
     val activeContext: List<ChatMessage> = emptyList(),
@@ -51,8 +58,9 @@ data class ChatUiState(
     val ollamaServerUrl: String = "",
     val ollamaApiKey: String = "",
     val offlineModelPath: String = "",
-    val availableModels: List<String> = listOf("$ONLINE_PREFIX$DEFAULT_ONLINE_MODEL"),
-    val selectedModel: String = "$ONLINE_PREFIX$DEFAULT_ONLINE_MODEL",
+    val resolvedOfflineModelPath: String = "",
+    val availableModels: List<String> = listOf(DEFAULT_ONLINE_MODEL),
+    val selectedModel: String = DEFAULT_ONLINE_MODEL,
     val mode: EngineMode = EngineMode.Online,
     val isGenerating: Boolean = false,
     val statusMessage: String? = null,
@@ -60,24 +68,27 @@ data class ChatUiState(
 )
 
 class ChatViewModel(
-    private val httpClient: OkHttpClient = OkHttpClient(),
     private val clock: Clock = Clock.systemDefaultZone()
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
-    private var ollamaApi: OllamaApi? = null
-    private var onlineModelNames: List<String> = listOf(DEFAULT_ONLINE_MODEL)
     private var settingsRepository: SettingsRepository? = null
+    private var modelRepository: ModelRepository? = null
+    private val onlineOllamaService = OnlineOllamaService(okHttpClient = okhttp3.OkHttpClient())
+    private val offlineLlamaEngine = OfflineLlamaEngine()
     private var statusMessageJob: Job? = null
+    private var onlineModelNames: List<String> = listOf(DEFAULT_ONLINE_MODEL)
+
+    fun attachAppContext(context: Context) {
+        if (modelRepository == null) {
+            modelRepository = ModelRepository(context.applicationContext)
+        }
+    }
 
     fun attachSettingsRepository(repository: SettingsRepository) {
         settingsRepository = repository
-        val currentUrl = _uiState.value.ollamaServerUrl
-        if (currentUrl.isNotBlank()) {
-            rebuildOllamaApi(currentUrl)
-        }
     }
 
     fun clearError() {
@@ -90,60 +101,64 @@ class ChatViewModel(
 
     fun updateOllamaApiKey(apiKey: String) {
         _uiState.update { it.copy(ollamaApiKey = apiKey.trim(), errorMessage = null) }
-        val currentUrl = _uiState.value.ollamaServerUrl
-        if (currentUrl.isNotBlank()) {
-            rebuildOllamaApi(currentUrl)
-        }
     }
 
     fun updateOllamaServerUrl(url: String) {
         val trimmed = url.trim()
         if (trimmed.isBlank()) {
-            ollamaApi = null
             onlineModelNames = listOf(DEFAULT_ONLINE_MODEL)
             _uiState.update { state ->
                 val mergedModels = mergeModelOptions(onlineModelNames, state.offlineModelPath)
-                val modelToSelect = when {
-                    state.selectedModel in mergedModels -> state.selectedModel
-                    mergedModels.isNotEmpty() -> mergedModels.first()
-                    else -> "$ONLINE_PREFIX$DEFAULT_ONLINE_MODEL"
-                }
+                val selected = selectFallbackModel(
+                    currentSelected = state.selectedModel,
+                    mode = state.mode,
+                    mergedModels = mergedModels
+                )
                 state.copy(
                     ollamaServerUrl = "",
                     availableModels = mergedModels,
-                    selectedModel = modelToSelect,
-                    mode = if (modelToSelect.startsWith(OFFLINE_PREFIX)) EngineMode.Offline else EngineMode.Online,
+                    selectedModel = selected,
+                    mode = if (selected.startsWith(OFFLINE_PREFIX)) EngineMode.Offline else EngineMode.Online,
                     errorMessage = null
                 )
             }
             return
         }
 
-        _uiState.update { it.copy(ollamaServerUrl = trimmed, errorMessage = null) }
-        rebuildOllamaApi(trimmed)
+        _uiState.update {
+            val normalizedSelected = normalizeLegacyOnlineLabel(it.selectedModel)
+            it.copy(
+                ollamaServerUrl = trimmed,
+                selectedModel = normalizedSelected,
+                errorMessage = null
+            )
+        }
     }
 
     fun updateOfflineModelPath(path: String) {
         val trimmed = path.trim()
-        val previousPath = _uiState.value.offlineModelPath
+        val previous = _uiState.value.offlineModelPath
         _uiState.update { state ->
             val mergedModels = mergeModelOptions(onlineModelNames, trimmed)
-            val offlineEntry = mergedModels.lastOrNull { it.startsWith(OFFLINE_PREFIX) }
-            val modelToSelect = when {
-                trimmed.isBlank() && state.mode == EngineMode.Offline -> mergedModels.first()
-                state.mode == EngineMode.Offline && offlineEntry != null -> offlineEntry
-                state.selectedModel in mergedModels -> state.selectedModel
-                else -> mergedModels.first()
-            }
+            val fallback = selectFallbackModel(
+                currentSelected = state.selectedModel,
+                mode = state.mode,
+                mergedModels = mergedModels
+            )
             state.copy(
                 offlineModelPath = trimmed,
+                resolvedOfflineModelPath = if (trimmed == state.offlineModelPath) {
+                    state.resolvedOfflineModelPath
+                } else {
+                    ""
+                },
                 availableModels = mergedModels,
-                selectedModel = modelToSelect,
-                mode = if (modelToSelect.startsWith(OFFLINE_PREFIX)) EngineMode.Offline else EngineMode.Online
+                selectedModel = fallback,
+                mode = if (fallback.startsWith(OFFLINE_PREFIX)) EngineMode.Offline else EngineMode.Online
             )
         }
 
-        if (trimmed.isBlank() || (previousPath.isNotBlank() && previousPath != trimmed)) {
+        if (trimmed.isBlank() || (previous.isNotBlank() && previous != trimmed)) {
             viewModelScope.launch {
                 unloadOfflineModelWithStatus()
             }
@@ -152,87 +167,155 @@ class ChatViewModel(
 
     fun selectModel(model: String) {
         val state = _uiState.value
-        if (model == state.selectedModel) {
+        val normalizedModel = normalizeLegacyOnlineLabel(model)
+        if (normalizedModel == state.selectedModel) {
             return
         }
 
-        if (model.startsWith(OFFLINE_PREFIX)) {
-            val modelPath = state.offlineModelPath
-            if (modelPath.isBlank()) {
+        if (normalizedModel.startsWith(OFFLINE_PREFIX)) {
+            if (state.offlineModelPath.isBlank()) {
                 _uiState.update {
-                    it.copy(errorMessage = "Select a GGUF file in Settings before using Offline mode")
+                    it.copy(errorMessage = "Model file not found")
                 }
                 return
             }
+
             _uiState.update {
                 it.copy(
-                    selectedModel = model,
+                    selectedModel = normalizedModel,
                     mode = EngineMode.Offline,
                     errorMessage = null
                 )
             }
+
+            viewModelScope.launch {
+                when (val prepared = prepareAndLoadOfflineModel()) {
+                    is OfflinePreparationResult.Success -> {
+                        // already surfaced by status updates
+                    }
+
+                    is OfflinePreparationResult.Failure -> {
+                        _uiState.update {
+                            it.copy(errorMessage = prepared.message)
+                        }
+                    }
+                }
+            }
         } else {
             _uiState.update {
                 it.copy(
-                    selectedModel = model,
+                    selectedModel = normalizedModel,
                     mode = EngineMode.Online,
                     errorMessage = null
                 )
             }
+
             viewModelScope.launch {
                 unloadOfflineModelWithStatus()
+                refreshOnlineModels()
             }
         }
     }
 
+    fun onModelDropdownOpened() {
+        val state = _uiState.value
+        if (state.mode == EngineMode.Online && state.ollamaServerUrl.isNotBlank()) {
+            refreshOnlineModels()
+        }
+    }
+
     fun refreshOnlineModels() {
-        val api = ollamaApi ?: return
+        val state = _uiState.value
+        val url = state.ollamaServerUrl.trim()
+        if (url.isBlank()) {
+            return
+        }
+
         viewModelScope.launch {
-            runCatching { withContext(Dispatchers.IO) { api.fetchModels() } }
-                .onSuccess { response ->
-                    val fetched = response.models.map { it.name }.filter { it.isNotBlank() }
-                    onlineModelNames = if (fetched.isEmpty()) {
-                        listOf(DEFAULT_ONLINE_MODEL)
-                    } else {
-                        fetched
-                    }
-                    _uiState.update { state ->
-                        val mergedModels = mergeModelOptions(onlineModelNames, state.offlineModelPath)
-                        val modelToSelect = when {
-                            state.selectedModel in mergedModels -> state.selectedModel
-                            mergedModels.isNotEmpty() -> mergedModels.first()
-                            else -> "$ONLINE_PREFIX$DEFAULT_ONLINE_MODEL"
-                        }
-                        state.copy(
-                            availableModels = mergedModels,
-                            selectedModel = modelToSelect,
-                            mode = if (modelToSelect.startsWith(OFFLINE_PREFIX)) {
-                                EngineMode.Offline
-                            } else {
-                                EngineMode.Online
-                            },
-                            errorMessage = null
-                        )
-                    }
+            val result = onlineOllamaService.fetchModelNames(
+                url,
+                resolveOllamaApiKey(state.ollamaApiKey)
+            )
+            val fetchedModels = result.getOrNull()
+            if (fetchedModels != null) {
+                onlineModelNames = fetchedModels
+                _uiState.update { current ->
+                    val mergedModels = mergeModelOptions(onlineModelNames, current.offlineModelPath)
+                    val selected = selectFallbackModel(
+                        currentSelected = current.selectedModel,
+                        mode = current.mode,
+                        mergedModels = mergedModels
+                    )
+                    current.copy(
+                        availableModels = mergedModels,
+                        selectedModel = selected,
+                        mode = if (selected.startsWith(OFFLINE_PREFIX)) EngineMode.Offline else EngineMode.Online,
+                        errorMessage = null
+                    )
                 }
-                .onFailure { error ->
-                    _uiState.update {
-                        it.copy(errorMessage = error.message ?: "Failed to load online models")
-                    }
+            } else {
+                val failureMessage = result.exceptionOrNull()?.message ?: "Invalid endpoint"
+                _uiState.update {
+                    it.copy(errorMessage = failureMessage)
                 }
+            }
+        }
+    }
+
+    suspend fun validateOnlineSettings(
+        ollamaUrl: String,
+        ollamaApiKey: String
+    ): OnlineSettingsValidationResult {
+        val normalizedUrl = ollamaUrl.trim()
+        if (normalizedUrl.isBlank()) {
+            return OnlineSettingsValidationResult.Success
+        }
+
+        return when (onlineOllamaService.validateConnection(normalizedUrl, ollamaApiKey.trim())) {
+            OllamaConnectionResult.Success -> {
+                setTransientStatus("Connection successful")
+                OnlineSettingsValidationResult.Success
+            }
+
+            OllamaConnectionResult.InvalidApiKey -> {
+                _uiState.update { it.copy(errorMessage = "Invalid API key") }
+                OnlineSettingsValidationResult.Failure("Invalid API key")
+            }
+
+            OllamaConnectionResult.InvalidOllamaUrl,
+            OllamaConnectionResult.InvalidEndpoint -> {
+                _uiState.update { it.copy(errorMessage = "Invalid Ollama URL") }
+                OnlineSettingsValidationResult.Failure("Invalid Ollama URL")
+            }
+
+            OllamaConnectionResult.ServerUnreachable -> {
+                _uiState.update { it.copy(errorMessage = "Server unreachable") }
+                OnlineSettingsValidationResult.Failure("Server unreachable")
+            }
+
+            OllamaConnectionResult.NoModelsReturned -> {
+                _uiState.update { it.copy(errorMessage = "No models returned") }
+                OnlineSettingsValidationResult.Failure("No models returned")
+            }
+
+            is OllamaConnectionResult.Failure -> {
+                _uiState.update { it.copy(errorMessage = "Invalid endpoint") }
+                OnlineSettingsValidationResult.Failure("Invalid endpoint")
+            }
         }
     }
 
     fun sendMessage() {
-        val userText = _uiState.value.inputText.trim()
-        if (userText.isBlank() || _uiState.value.isGenerating) {
+        val state = _uiState.value
+        val userText = state.inputText.trim()
+        if (userText.isBlank() || state.isGenerating) {
             return
         }
 
         val userMessage = ChatMessage(role = ChatRole.User, content = userText)
-        _uiState.update { state ->
-            val updatedMessages = (state.messages + userMessage).takeLast(MAX_STORED_MESSAGES)
-            state.copy(
+        _uiState.update { current ->
+            val updatedMessages = (current.messages + userMessage).takeLast(MAX_STORED_MESSAGES)
+            current.copy(
                 messages = updatedMessages,
                 activeContext = updatedMessages.takeLast(CONTEXT_WINDOW_SIZE),
                 inputText = "",
@@ -242,81 +325,49 @@ class ChatViewModel(
         }
 
         viewModelScope.launch {
-            val stateAtGenerationStart = _uiState.value
-            val contextWindow = stateAtGenerationStart.messages.takeLast(CONTEXT_WINDOW_SIZE)
+            val stateAtStart = _uiState.value
+            val contextWindow = stateAtStart.messages.takeLast(CONTEXT_WINDOW_SIZE)
             val systemPrompt = buildDynamicSystemPrompt()
 
-            runCatching {
-                when (stateAtGenerationStart.mode) {
-                    EngineMode.Online -> generateOnlineReply(
-                        modelDisplayName = stateAtGenerationStart.selectedModel,
-                        contextWindow = contextWindow,
-                        systemPrompt = systemPrompt
-                    )
+            when (stateAtStart.mode) {
+                EngineMode.Online -> generateOnlineReplyStreaming(
+                    stateAtStart = stateAtStart,
+                    contextWindow = contextWindow,
+                    systemPrompt = systemPrompt
+                )
 
-                    EngineMode.Offline -> generateOfflineReply(
-                        offlineModelPath = stateAtGenerationStart.offlineModelPath,
-                        contextWindow = contextWindow,
-                        systemPrompt = systemPrompt
-                    )
-                }
-            }.onSuccess { assistantText ->
-                val assistantMessage = ChatMessage(role = ChatRole.Assistant, content = assistantText)
-                _uiState.update { state ->
-                    val updatedMessages = (state.messages + assistantMessage).takeLast(MAX_STORED_MESSAGES)
-                    state.copy(
-                        messages = updatedMessages,
-                        activeContext = updatedMessages.takeLast(CONTEXT_WINDOW_SIZE),
-                        isGenerating = false,
-                        errorMessage = null
-                    )
-                }
-            }.onFailure { error ->
-                _uiState.update { state ->
-                    state.copy(
-                        isGenerating = false,
-                        errorMessage = error.message ?: "Generation failed"
-                    )
-                }
+                EngineMode.Offline -> generateOfflineReply(
+                    contextWindow = contextWindow,
+                    systemPrompt = systemPrompt
+                )
             }
         }
     }
 
     override fun onCleared() {
         statusMessageJob?.cancel()
-        LlamaJniBridge.unloadModel()
+        runCatching { LlamaJniBridge.unloadModel() }
         super.onCleared()
     }
 
-    private fun rebuildOllamaApi(baseUrl: String) {
-        ollamaApi = runCatching {
-            OllamaApiFactory.create(
-                baseUrl = baseUrl,
-                okHttpClient = httpClient,
-                apiKeyProvider = { resolveOllamaApiKey() }
-            )
-        }.onFailure { error ->
-            _uiState.update {
-                it.copy(errorMessage = error.message ?: "Invalid Ollama server URL")
-            }
-        }.getOrNull()
-    }
-
-    private fun resolveOllamaApiKey(): String {
-        val storedKey = settingsRepository?.ollamaApiKey?.trim().orEmpty()
-        return storedKey.ifBlank { _uiState.value.ollamaApiKey.trim() }
-    }
-
-    private suspend fun generateOnlineReply(
-        modelDisplayName: String,
+    private suspend fun generateOnlineReplyStreaming(
+        stateAtStart: ChatUiState,
         contextWindow: List<ChatMessage>,
         systemPrompt: String
-    ): String = withContext(Dispatchers.IO) {
-        val api = ollamaApi ?: error("Ollama API is not configured")
-        val modelName = modelDisplayName.removePrefix(ONLINE_PREFIX).ifBlank { DEFAULT_ONLINE_MODEL }
+    ) {
+        val url = stateAtStart.ollamaServerUrl.trim()
+        if (url.isBlank()) {
+            finishGenerationWithError("Invalid endpoint")
+            return
+        }
+
+        val selectedModel = normalizeLegacyOnlineLabel(stateAtStart.selectedModel)
+        if (selectedModel.isBlank() || selectedModel.startsWith(OFFLINE_PREFIX)) {
+            finishGenerationWithError("No models returned")
+            return
+        }
 
         val requestMessages = buildList {
-            // The dynamic system prompt is silently prepended every generation.
             add(OllamaMessage(role = "system", content = systemPrompt))
             contextWindow.forEach { message ->
                 add(
@@ -328,43 +379,59 @@ class ChatViewModel(
             }
         }
 
-        val response = api.chat(
-            OllamaChatRequest(
-                model = modelName,
-                messages = requestMessages,
-                stream = false
+        val assistantMessage = ChatMessage(role = ChatRole.Assistant, content = "")
+        _uiState.update { current ->
+            val updatedMessages = (current.messages + assistantMessage).takeLast(MAX_STORED_MESSAGES)
+            current.copy(
+                messages = updatedMessages,
+                activeContext = updatedMessages.takeLast(CONTEXT_WINDOW_SIZE)
             )
-        )
+        }
 
-        response.message?.content?.trim()
-            ?.takeIf { it.isNotBlank() }
-            ?: response.response?.trim()?.takeIf { it.isNotBlank() }
-            ?: error("Online engine returned an empty response")
+        val assistantMessageId = assistantMessage.id
+        var emittedAnyChunk = false
+
+        when (
+            val streamResult = onlineOllamaService.streamChatResponse(
+                baseUrl = url,
+                apiKey = resolveOllamaApiKey(stateAtStart.ollamaApiKey),
+                model = selectedModel,
+                messages = requestMessages,
+                onDelta = { delta ->
+                    emittedAnyChunk = true
+                    appendAssistantChunk(assistantMessageId, delta)
+                }
+            )
+        ) {
+            OllamaChatStreamResult.Success -> {
+                if (!emittedAnyChunk) {
+                    removeMessageById(assistantMessageId)
+                    finishGenerationWithError("Online engine returned an empty response")
+                } else {
+                    finishGeneration()
+                }
+            }
+
+            is OllamaChatStreamResult.Failure -> {
+                if (!emittedAnyChunk) {
+                    removeMessageById(assistantMessageId)
+                }
+                finishGenerationWithError(streamResult.message)
+            }
+        }
     }
 
     private suspend fun generateOfflineReply(
-        offlineModelPath: String,
         contextWindow: List<ChatMessage>,
         systemPrompt: String
-    ): String {
-        if (offlineModelPath.isBlank()) {
-            return offlineModelNotLoadedMessage("no GGUF model selected")
-        }
-
-        if (!OfflineEngineManager.isModelLoaded(offlineModelPath)) {
-            setStatus("Loading offline model...")
-            when (val loadResult = OfflineEngineManager.loadModel(offlineModelPath)) {
-                OfflineEngineResult.Success -> {
-                    setTransientStatus("Offline model loaded")
-                }
-
-                is OfflineEngineResult.Failure -> {
-                    val reason = loadResult.error.shortReason
-                    Log.e(TAG, "Offline model load failed: $reason")
-                    clearStatus()
-                    return offlineModelNotLoadedMessage(reason)
-                }
-            }
+    ) {
+        val preparation = prepareAndLoadOfflineModel()
+        if (preparation is OfflinePreparationResult.Failure) {
+            appendAssistantMessage(
+                "Offline model not loaded: ${preparation.message}. Tap Settings → Offline Engine to select or re-add the model."
+            )
+            finishGeneration()
+            return
         }
 
         val contextText = contextWindow.joinToString(separator = "\n") { message ->
@@ -378,51 +445,222 @@ class ChatViewModel(
             append("\nAlice:")
         }
 
-        val response = withContext(Dispatchers.IO) {
-            LlamaJniBridge.generateText(
+        when (
+            val result = offlineLlamaEngine.generateText(
                 prompt = prompt,
                 maxTokens = 512,
                 temperature = 0.7f
             )
-        }.trim()
+        ) {
+            is OfflineLlamaGenerateResult.Success -> {
+                appendAssistantMessage(result.text)
+            }
 
-        if (response.equals("Offline model is not loaded.", ignoreCase = true)) {
-            Log.e(TAG, "Offline generation failed: native runtime reported model not loaded")
-            return offlineModelNotLoadedMessage("runtime reported model is not loaded")
+            is OfflineLlamaGenerateResult.Failure -> {
+                val message = when (result.error) {
+                    OfflineLlamaError.ModelFileNotFound -> "Model file not found"
+                    OfflineLlamaError.ModelLoadFailure -> "Model load failure"
+                    OfflineLlamaError.NativeLibraryMissing -> "Native library missing"
+                    OfflineLlamaError.ModelNotLoaded -> "Model load failure"
+                    is OfflineLlamaError.Unknown -> result.error.message
+                }
+
+                appendAssistantMessage(
+                    "Offline model not loaded: $message. Tap Settings → Offline Engine to select or re-add the model."
+                )
+            }
         }
 
-        if (response.isBlank() || response.startsWith("Offline engine stub response")) {
-            Log.e(TAG, "Offline generation failed: empty or stub output")
-            return "Offline engine error: no output produced (see logs)."
+        finishGeneration()
+    }
+
+    private suspend fun prepareAndLoadOfflineModel(): OfflinePreparationResult {
+        val state = _uiState.value
+        val offlineModelPath = state.offlineModelPath.trim()
+        if (offlineModelPath.isBlank()) {
+            return OfflinePreparationResult.Failure("Model file not found")
         }
 
-        return response
+        val repository = modelRepository
+            ?: return OfflinePreparationResult.Failure("Model load failure")
+
+        val resolvedPath = if (state.resolvedOfflineModelPath.isNotBlank()) {
+            state.resolvedOfflineModelPath
+        } else {
+            when (val pathResult = repository.resolveOfflineModelPath(offlineModelPath)) {
+                is ModelPathResult.Success -> {
+                    _uiState.update {
+                        it.copy(resolvedOfflineModelPath = pathResult.filePath)
+                    }
+                    pathResult.filePath
+                }
+
+                is ModelPathResult.Failure -> {
+                    return OfflinePreparationResult.Failure(pathResult.detail)
+                }
+            }
+        }
+
+        if (offlineLlamaEngine.isModelLoaded(resolvedPath)) {
+            return OfflinePreparationResult.Success
+        }
+
+        setStatus("Loading offline model...")
+        return when (val load = offlineLlamaEngine.loadModel(resolvedPath)) {
+            OfflineLlamaResult.Success -> {
+                setTransientStatus("Offline model loaded")
+                OfflinePreparationResult.Success
+            }
+
+            is OfflineLlamaResult.Failure -> {
+                clearStatus()
+                val message = when (load.error) {
+                    OfflineLlamaError.ModelFileNotFound -> "Model file not found"
+                    OfflineLlamaError.ModelLoadFailure -> "Model load failure"
+                    OfflineLlamaError.NativeLibraryMissing -> "Native library missing"
+                    OfflineLlamaError.ModelNotLoaded -> "Model load failure"
+                    is OfflineLlamaError.Unknown -> load.error.message
+                }
+                Log.e(TAG, "Offline load failed: $message")
+                OfflinePreparationResult.Failure(message)
+            }
+        }
     }
 
     private suspend fun unloadOfflineModelWithStatus() {
-        if (!LlamaJniBridge.nativeIsModelLoaded()) {
+        if (!LlamaJniBridge.isModelLoadedSafe()) {
             return
         }
 
         setStatus("Unloading offline model...")
-        when (val unloadResult = OfflineEngineManager.unloadModel()) {
-            OfflineEngineResult.Success -> {
+        when (val unload = offlineLlamaEngine.unloadModel()) {
+            OfflineLlamaResult.Success -> {
                 setTransientStatus("Offline model unloaded")
             }
 
-            is OfflineEngineResult.Failure -> {
+            is OfflineLlamaResult.Failure -> {
                 clearStatus()
-                _uiState.update {
-                    it.copy(
-                        errorMessage = "Failed to unload offline model: ${unloadResult.error.shortReason}"
-                    )
+                val message = when (unload.error) {
+                    OfflineLlamaError.ModelFileNotFound -> "Model file not found"
+                    OfflineLlamaError.ModelLoadFailure -> "Model load failure"
+                    OfflineLlamaError.NativeLibraryMissing -> "Native library missing"
+                    OfflineLlamaError.ModelNotLoaded -> "Model load failure"
+                    is OfflineLlamaError.Unknown -> unload.error.message
                 }
+                _uiState.update { it.copy(errorMessage = message) }
             }
         }
     }
 
-    private fun offlineModelNotLoadedMessage(reason: String): String =
-        "Offline model not loaded: $reason. Tap Settings → Offline Engine to select or re-add the model."
+    private fun appendAssistantChunk(messageId: String, delta: String) {
+        if (delta.isBlank()) {
+            return
+        }
+        _uiState.update { state ->
+            val updatedMessages = state.messages.toMutableList()
+            val index = updatedMessages.indexOfLast { it.id == messageId }
+            if (index >= 0) {
+                val current = updatedMessages[index]
+                updatedMessages[index] = current.copy(content = current.content + delta)
+            }
+            val finalMessages = updatedMessages.takeLast(MAX_STORED_MESSAGES)
+            state.copy(
+                messages = finalMessages,
+                activeContext = finalMessages.takeLast(CONTEXT_WINDOW_SIZE)
+            )
+        }
+    }
+
+    private fun appendAssistantMessage(content: String) {
+        _uiState.update { state ->
+            val updatedMessages = (state.messages + ChatMessage(role = ChatRole.Assistant, content = content))
+                .takeLast(MAX_STORED_MESSAGES)
+            state.copy(
+                messages = updatedMessages,
+                activeContext = updatedMessages.takeLast(CONTEXT_WINDOW_SIZE)
+            )
+        }
+    }
+
+    private fun removeMessageById(messageId: String) {
+        _uiState.update { state ->
+            val updatedMessages = state.messages.filterNot { it.id == messageId }
+            state.copy(
+                messages = updatedMessages,
+                activeContext = updatedMessages.takeLast(CONTEXT_WINDOW_SIZE)
+            )
+        }
+    }
+
+    private fun finishGeneration() {
+        _uiState.update { it.copy(isGenerating = false) }
+    }
+
+    private fun finishGenerationWithError(message: String) {
+        _uiState.update {
+            it.copy(
+                isGenerating = false,
+                errorMessage = message
+            )
+        }
+    }
+
+    private fun resolveOllamaApiKey(preferred: String): String {
+        val stateKey = preferred.trim()
+        if (stateKey.isNotBlank()) {
+            return stateKey
+        }
+        return settingsRepository?.ollamaApiKey?.trim().orEmpty()
+    }
+
+    private fun mergeModelOptions(
+        onlineNames: List<String>,
+        offlinePath: String
+    ): List<String> {
+        val normalizedOnline = onlineNames
+            .map { normalizeLegacyOnlineLabel(it) }
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .ifEmpty { listOf(DEFAULT_ONLINE_MODEL) }
+
+        val offlineEntry = offlinePath
+            .takeIf { it.isNotBlank() }
+            ?.let { path ->
+                val label = path.substringAfterLast('/').substringBefore('?').ifBlank { "Local GGUF" }
+                "$OFFLINE_PREFIX$label"
+            }
+
+        return buildList {
+            addAll(normalizedOnline)
+            if (offlineEntry != null) {
+                add(offlineEntry)
+            }
+        }.distinct()
+    }
+
+    private fun selectFallbackModel(
+        currentSelected: String,
+        mode: EngineMode,
+        mergedModels: List<String>
+    ): String {
+        val normalizedCurrent = normalizeLegacyOnlineLabel(currentSelected)
+        if (normalizedCurrent in mergedModels) {
+            return normalizedCurrent
+        }
+
+        if (mode == EngineMode.Offline) {
+            val offlineEntry = mergedModels.lastOrNull { it.startsWith(OFFLINE_PREFIX) }
+            if (offlineEntry != null) {
+                return offlineEntry
+            }
+        }
+
+        return mergedModels.firstOrNull().orEmpty().ifBlank { DEFAULT_ONLINE_MODEL }
+    }
+
+    private fun normalizeLegacyOnlineLabel(modelName: String): String {
+        return modelName.removePrefix(LEGACY_ONLINE_PREFIX).trim()
+    }
 
     private fun setStatus(message: String) {
         statusMessageJob?.cancel()
@@ -449,27 +687,6 @@ class ChatViewModel(
         _uiState.update { it.copy(statusMessage = null) }
     }
 
-    private fun mergeModelOptions(
-        onlineNames: List<String>,
-        offlinePath: String
-    ): List<String> {
-        val onlineEntries = onlineNames
-            .ifEmpty { listOf(DEFAULT_ONLINE_MODEL) }
-            .map { "$ONLINE_PREFIX$it" }
-        val offlineEntry = offlinePath
-            .takeIf { it.isNotBlank() }
-            ?.let { path ->
-                val label = path.substringAfterLast('/').substringBefore('?').ifBlank { "Local GGUF" }
-                "$OFFLINE_PREFIX$label"
-            }
-        return buildList {
-            addAll(onlineEntries)
-            if (offlineEntry != null) {
-                add(offlineEntry)
-            }
-        }
-    }
-
     private fun buildDynamicSystemPrompt(): String {
         val now = LocalDateTime.now(clock)
         val dynamicTime = now.format(DateTimeFormatter.ofPattern("HH:mm:ss", Locale.US))
@@ -479,5 +696,10 @@ class ChatViewModel(
             .replace("[DYNAMIC_TIME]", dynamicTime)
             .replace("[DYNAMIC_DATE]", dynamicDate)
             .replace("[DYNAMIC_DAY]", dynamicDay)
+    }
+
+    private sealed class OfflinePreparationResult {
+        data object Success : OfflinePreparationResult()
+        data class Failure(val message: String) : OfflinePreparationResult()
     }
 }

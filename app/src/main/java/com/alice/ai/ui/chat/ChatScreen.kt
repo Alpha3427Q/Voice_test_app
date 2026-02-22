@@ -78,6 +78,7 @@ fun ChatScreen(
     errorMessage: String?,
     onInputTextChange: (String) -> Unit,
     onModelSelected: (String) -> Unit,
+    onModelDropdownOpened: () -> Unit,
     onUploadClick: () -> Unit,
     onSendClick: () -> Unit,
     onClearError: () -> Unit,
@@ -99,7 +100,8 @@ fun ChatScreen(
                     ModelSelector(
                         selectedModel = selectedModel,
                         models = availableModels,
-                        onModelSelected = onModelSelected
+                        onModelSelected = onModelSelected,
+                        onExpanded = onModelDropdownOpened
                     )
                 },
                 actions = {
@@ -156,11 +158,17 @@ fun ChatScreen(
 private fun ModelSelector(
     selectedModel: String,
     models: List<String>,
-    onModelSelected: (String) -> Unit
+    onModelSelected: (String) -> Unit,
+    onExpanded: () -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
-        FilledTonalButton(onClick = { expanded = true }) {
+        FilledTonalButton(
+            onClick = {
+                onExpanded()
+                expanded = true
+            }
+        ) {
             Text(
                 text = selectedModel,
                 maxLines = 1
