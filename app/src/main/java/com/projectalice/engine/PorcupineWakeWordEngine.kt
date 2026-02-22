@@ -3,6 +3,7 @@ package com.projectalice.engine
 import android.content.Context
 import ai.picovoice.porcupine.PorcupineException
 import ai.picovoice.porcupine.PorcupineManager
+import com.projectalice.data.EngineRepository
 
 class PorcupineWakeWordEngine(private val context: Context) : WakeWordEngine {
     private var porcupineManager: PorcupineManager? = null
@@ -45,6 +46,7 @@ class PorcupineWakeWordEngine(private val context: Context) : WakeWordEngine {
                 .setKeywordPath(keywordPath)
                 .build(context) { keywordIndex ->
                     if (keywordIndex == 0) {
+                        EngineRepository.setOverlayTriggered(true)
                         onWakeWordDetected()
                     }
                 }

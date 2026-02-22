@@ -120,6 +120,7 @@ class AliceEngineService : Service() {
         val settings = settingsRepository.settings.first()
         if (!settings.backgroundListeningEnabled || EngineRepository.state.value.isMicBlocked) return
         if (EngineRepository.state.value.isProcessing || isSttActive) return
+        EngineRepository.setOverlayTriggered(false)
         startWakeWordListening()
     }
 
@@ -135,6 +136,7 @@ class AliceEngineService : Service() {
     }
 
     private suspend fun onWakeWordDetected() {
+        EngineRepository.setOverlayTriggered(true)
         stopWakeWordListening()
         startSpeechRecognition()
     }
@@ -260,6 +262,7 @@ class AliceEngineService : Service() {
         } finally {
             EngineRepository.setProcessing(false)
             EngineRepository.setLiveTranscription("")
+            EngineRepository.setOverlayTriggered(false)
             resumeWakeWordIfAllowed()
         }
     }

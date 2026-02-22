@@ -28,6 +28,10 @@ object EngineRepository {
         _state.value = _state.value.copy(isMicBlocked = blocked)
     }
 
+    fun setOverlayTriggered(triggered: Boolean) {
+        _state.value = _state.value.copy(isOverlayTriggered = triggered)
+    }
+
     fun clearTransientText() {
         _state.value = _state.value.copy(liveTranscription = "", assistantStreamingText = "")
     }
@@ -37,6 +41,7 @@ data class EngineUiState(
     val isListening: Boolean = false,
     val isProcessing: Boolean = false,
     val isMicBlocked: Boolean = false,
+    val isOverlayTriggered: Boolean = false,
     val liveTranscription: String = "",
     val assistantStreamingText: String = ""
 )
