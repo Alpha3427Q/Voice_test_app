@@ -1,10 +1,9 @@
 package com.projectalice.ui.settings
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
 import androidx.lifecycle.viewModelScope
-import androidx.lifecycle.viewmodel.viewModelFactory
 import com.projectalice.data.AppSettings
 import com.projectalice.data.EngineRepository
 import com.projectalice.data.EngineUiState
@@ -82,12 +81,15 @@ class SettingsViewModel(
     }
 
     companion object {
-        val Factory: ViewModelProvider.Factory = viewModelFactory {
-            initializer {
-                val appContext = this[APPLICATION_KEY]
-                    ?.applicationContext
-                    ?: error("Application is required")
-                SettingsViewModel(SettingsRepository(appContext))
+        fun provideFactory(context: Context): ViewModelProvider.Factory {
+            return object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                    if (modelClass.isAssignableFrom(SettingsViewModel::class.java)) {
+                        return SettingsViewModel(SettingsRepository(context.applicationContext)) as T
+                    }
+                    throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")
+                }
             }
         }
     }

@@ -1,7 +1,6 @@
 package com.projectalice
 
 import android.Manifest
-import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -31,7 +30,9 @@ import com.projectalice.ui.settings.SettingsScreen
 import com.projectalice.ui.settings.SettingsViewModel
 
 class MainActivity : ComponentActivity() {
-    private val viewModel: SettingsViewModel by viewModels { SettingsViewModel.Factory }
+    private val viewModel: SettingsViewModel by viewModels {
+        SettingsViewModel.provideFactory(applicationContext)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -48,7 +49,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun SettingsRoute(viewModel: SettingsViewModel) {
     val context = LocalContext.current
-    val activity = context as? Activity
+    val activity = context as? ComponentActivity
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
     var promptedRuntime by remember { mutableStateOf(false) }

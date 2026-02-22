@@ -75,7 +75,14 @@ class MicrophoneBouncer(
     private val recordingCallback = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         object : AudioManager.AudioRecordingCallback() {
             override fun onRecordingConfigChanged(configs: MutableList<AudioRecordingConfiguration>) {
-                externalRecordingActive = configs.any { it.clientUid != android.os.Process.myUid() }
+                externalRecordingActive = configs.any { config ->
+                    val clientUid = try {
+                        config.javaClass.getMethod("getClientUid").invoke(config) as? Int ?: -1
+                    } catch (_: Exception) {
+                        -1
+                    }
+                    clientUid != -1 && clientUid != android.os.Process.myUid()
+                }
                 publishAvailability()
             }
         }
