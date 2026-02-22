@@ -53,3 +53,6 @@ The app features two distinct processing modes that share a unified chat memory:
 * **API Call Structure:** Performs an HTTP GET request to the configured TTS URL (Default: `https://lonekirito-asuna3456.hf.space/speak`).
 * **Query Params:** URL-encodes the AI's response text (`?text=...`).
 * **Audio Handling:** Downloads/streams the resulting `.wav` binary and plays it using Android's native `MediaPlayer`.
+
+## 5. Assets & Branding
+* **App Icon:** The Android launcher icon must be explicitly configured in the Manifest and resources to use the local asset named `appicon.png`.
