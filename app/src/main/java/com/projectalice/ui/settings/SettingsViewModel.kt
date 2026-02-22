@@ -1,6 +1,7 @@
 package com.projectalice.ui.settings
 
 import android.content.Context
+import android.content.pm.PackageManager
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -24,7 +25,8 @@ data class SettingsUiState(
         usageStats = false,
         batteryOptimizationExempt = false
     ),
-    val engine: EngineUiState = EngineUiState()
+    val engine: EngineUiState = EngineUiState(),
+    val isVulkanSupported: Boolean = false
 )
 
 class SettingsViewModel(
@@ -39,16 +41,19 @@ class SettingsViewModel(
             batteryOptimizationExempt = false
         )
     )
+    private val vulkanSupportState = MutableStateFlow(false)
 
     val uiState: StateFlow<SettingsUiState> = combine(
         settingsRepository.settings,
         permissionState,
-        EngineRepository.state
-    ) { settings, permissions, engine ->
+        EngineRepository.state,
+        vulkanSupportState
+    ) { settings, permissions, engine, isVulkanSupported ->
         SettingsUiState(
             settings = settings,
             permissions = permissions,
-            engine = engine
+            engine = engine,
+            isVulkanSupported = isVulkanSupported
         )
     }.stateIn(
         scope = viewModelScope,
@@ -78,6 +83,11 @@ class SettingsViewModel(
 
     fun setOllamaUrl(value: String) {
         viewModelScope.launch { settingsRepository.setOllamaUrl(value) }
+    }
+
+    fun refreshHardwareAcceleration(context: Context) {
+        vulkanSupportState.value = context.packageManager
+            .hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_VERSION)
     }
 
     companion object {

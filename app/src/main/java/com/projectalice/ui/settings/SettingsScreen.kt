@@ -11,13 +11,17 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -87,6 +91,8 @@ fun SettingsScreen(
             singleLine = true
         )
 
+        HardwareAccelerationCard(vulkanSupported = state.isVulkanSupported)
+
         Text(text = "Permissions", style = MaterialTheme.typography.titleMedium)
         PermissionRow("Record Audio", state.permissions.recordAudio, PermissionPrompt.RECORD_AUDIO, onPermissionPromptClick)
         PermissionRow("Read Phone State", state.permissions.readPhoneState, PermissionPrompt.READ_PHONE_STATE, onPermissionPromptClick)
@@ -110,6 +116,42 @@ fun SettingsScreen(
         }
 
         Spacer(modifier = Modifier.height(16.dp))
+    }
+}
+
+@Composable
+private fun HardwareAccelerationCard(vulkanSupported: Boolean) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "Hardware Acceleration",
+                style = MaterialTheme.typography.titleMedium
+            )
+
+            Surface(
+                color = if (vulkanSupported) Color(0xFF2E7D32) else Color(0xFFC62828),
+                shape = MaterialTheme.shapes.medium
+            ) {
+                Text(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    text = if (vulkanSupported) {
+                        "CPU + GPU (Vulkan Supported)"
+                    } else {
+                        "CPU Only"
+                    },
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
+        }
     }
 }
 

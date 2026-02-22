@@ -32,8 +32,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.projectalice.engine.AliceEngineService
 import com.projectalice.overlay.OverlayService
+import com.projectalice.ui.ai.AiScreen
 import com.projectalice.ui.navigation.AppTab
-import com.projectalice.ui.navigation.PlaceholderTab
+import com.projectalice.ui.n8n.N8nScreen
 import com.projectalice.ui.settings.PermissionGatekeeper
 import com.projectalice.ui.settings.PermissionPrompt
 import com.projectalice.ui.settings.SettingsScreen
@@ -75,15 +76,9 @@ private fun MainScaffold(viewModel: SettingsViewModel) {
         }
     ) { innerPadding ->
         when (selectedTab) {
-            AppTab.AI -> PlaceholderTab(
-                text = "AI tab coming soon",
-                modifier = Modifier.padding(innerPadding)
-            )
+            AppTab.AI -> AiScreen(modifier = Modifier.padding(innerPadding))
 
-            AppTab.N8N -> PlaceholderTab(
-                text = "N8N tab coming soon",
-                modifier = Modifier.padding(innerPadding)
-            )
+            AppTab.N8N -> N8nScreen(modifier = Modifier.padding(innerPadding))
 
             AppTab.SETTINGS -> SettingsRoute(
                 viewModel = viewModel,
@@ -116,6 +111,7 @@ private fun SettingsRoute(
 
     fun refreshPermissions() {
         viewModel.updatePermissionSnapshot(PermissionGatekeeper.snapshot(context))
+        viewModel.refreshHardwareAcceleration(context)
     }
 
     fun promptPermission(prompt: PermissionPrompt) {
