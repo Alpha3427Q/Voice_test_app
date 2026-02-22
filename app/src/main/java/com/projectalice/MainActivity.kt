@@ -13,6 +13,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -21,7 +22,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.projectalice.engine.AliceEngineService
 import com.projectalice.overlay.OverlayService
 import com.projectalice.ui.settings.PermissionGatekeeper
@@ -50,7 +50,7 @@ class MainActivity : ComponentActivity() {
 private fun SettingsRoute(viewModel: SettingsViewModel) {
     val context = LocalContext.current
     val activity = context as? ComponentActivity
-    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val state by viewModel.uiState.collectAsState()
 
     var promptedRuntime by remember { mutableStateOf(false) }
     var promptedOverlay by remember { mutableStateOf(false) }
