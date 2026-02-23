@@ -1,8 +1,12 @@
 package com.alice.ai.ui.chat
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,19 +19,22 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowDropDown
+import androidx.compose.material.icons.outlined.ArrowDownward
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Send
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -36,22 +43,19 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontStyle
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import java.util.UUID
 
 data class ChatMessage(
@@ -73,6 +77,7 @@ fun ChatScreen(
     selectedModel: String,
     availableModels: List<String>,
     isGenerating: Boolean,
+    isWaitingForResponse: Boolean,
     activeContextCount: Int,
     statusMessage: String?,
     errorMessage: String?,
@@ -83,72 +88,220 @@ fun ChatScreen(
     onSendClick: () -> Unit,
     onClearError: () -> Unit,
     onReadAloud: (String) -> Unit,
+    onDeleteUserMessage: (String) -> Unit,
+    onShareMessage: (String) -> Unit,
+    onHistoryClick: () -> Unit,
+    onNewChatClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val clipboard = LocalClipboardManager.current
     val listState = rememberLazyListState()
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.lastIndex)
+    val scope = rememberCoroutineScope()
+
+    var autoScrollEnabled by rememberSaveable { mutableStateOf(true) }
+    var selectedUserMessage by remember { mutableStateOf<ChatMessage?>(null) }
+
+    val visibleMessages = remember(messages, isWaitingForResponse) {
+        messages.filterNot { message ->
+            isWaitingForResponse &&
+                message.role == ChatRole.Assistant &&
+                message.content.isBlank()
+        }
+    }
+    val showStatusCard = activeContextCount > 0 || isGenerating || statusMessage != null || errorMessage != null
+    val showSiriOrb = isWaitingForResponse
+    val totalItems = visibleMessages.size +
+        (if (showStatusCard) 1 else 0) +
+        (if (showSiriOrb) 1 else 0)
+    val streamUpdateKey = remember(visibleMessages) {
+        visibleMessages.lastOrNull()?.let { "${it.id}:${it.content.length}" }.orEmpty()
+    }
+
+    val isAtBottom by remember(listState, totalItems) {
+        derivedStateOf {
+            if (totalItems <= 0) {
+                true
+            } else {
+                val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+                lastVisible >= totalItems - 1
+            }
         }
     }
 
-    Scaffold(
-        modifier = modifier.fillMaxSize(),
-        topBar = {
-            TopAppBar(
-                title = {
-                    ModelSelector(
-                        selectedModel = selectedModel,
-                        models = availableModels,
-                        onModelSelected = onModelSelected,
-                        onExpanded = onModelDropdownOpened
-                    )
-                },
-                actions = {
-                    IconButton(onClick = onUploadClick) {
-                        Icon(
-                            imageVector = Icons.Outlined.Add,
-                            contentDescription = "Upload"
+    val showScrollToBottomButton = !autoScrollEnabled && !isAtBottom && totalItems > 0
+
+    LaunchedEffect(streamUpdateKey, isGenerating, isWaitingForResponse, autoScrollEnabled, totalItems) {
+        if (autoScrollEnabled && totalItems > 0 && (isGenerating || isWaitingForResponse || visibleMessages.isNotEmpty())) {
+            listState.animateScrollToItem(totalItems - 1)
+        }
+    }
+
+    LaunchedEffect(listState.isScrollInProgress, isAtBottom) {
+        if (listState.isScrollInProgress && !isAtBottom) {
+            autoScrollEnabled = false
+        }
+        if (isAtBottom) {
+            autoScrollEnabled = true
+        }
+    }
+
+    Box(modifier = modifier.fillMaxSize()) {
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            topBar = {
+                TopAppBar(
+                    title = {
+                        ModelSelector(
+                            selectedModel = selectedModel,
+                            models = availableModels,
+                            onModelSelected = onModelSelected,
+                            onExpanded = onModelDropdownOpened
+                        )
+                    },
+                    actions = {
+                        IconButton(onClick = onHistoryClick) {
+                            Icon(
+                                imageVector = Icons.Outlined.History,
+                                contentDescription = "Chat history"
+                            )
+                        }
+                        IconButton(onClick = onNewChatClick) {
+                            Icon(
+                                imageVector = Icons.Outlined.ChatBubbleOutline,
+                                contentDescription = "New chat"
+                            )
+                        }
+                        IconButton(onClick = onUploadClick) {
+                            Icon(
+                                imageVector = Icons.Outlined.Add,
+                                contentDescription = "Upload"
+                            )
+                        }
+                    }
+                )
+            },
+            bottomBar = {
+                ChatInputBar(
+                    inputText = inputText,
+                    onInputTextChange = onInputTextChange,
+                    onSendClick = onSendClick,
+                    isGenerating = isGenerating
+                )
+            }
+        ) { innerPadding ->
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .padding(horizontal = 12.dp),
+                contentPadding = PaddingValues(vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (showStatusCard) {
+                    item(key = "status") {
+                        ChatStatusCard(
+                            contextSize = activeContextCount,
+                            isGenerating = isGenerating,
+                            statusMessage = statusMessage,
+                            errorMessage = errorMessage,
+                            onClearError = onClearError
                         )
                     }
                 }
-            )
-        },
-        bottomBar = {
-            ChatInputBar(
-                inputText = inputText,
-                onInputTextChange = onInputTextChange,
-                onSendClick = onSendClick,
-                isGenerating = isGenerating
-            )
-        }
-    ) { innerPadding ->
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .padding(horizontal = 12.dp),
-            contentPadding = PaddingValues(vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            if (activeContextCount > 0 || isGenerating || statusMessage != null || errorMessage != null) {
-                item(key = "status") {
-                    ChatStatusCard(
-                        contextSize = activeContextCount,
-                        isGenerating = isGenerating,
-                        statusMessage = statusMessage,
-                        errorMessage = errorMessage,
-                        onClearError = onClearError
+
+                items(items = visibleMessages, key = { it.id }) { message ->
+                    ChatBubble(
+                        message = message,
+                        onReadAloud = onReadAloud,
+                        onUserLongPress = { selectedUserMessage = it }
                     )
                 }
-            }
 
-            items(items = messages, key = { it.id }) { message ->
-                ChatBubble(
-                    message = message,
-                    onReadAloud = onReadAloud
+                if (showSiriOrb) {
+                    item(key = "siri_orb") {
+                        AnimatedVisibility(
+                            visible = true,
+                            enter = fadeIn() + scaleIn(),
+                            exit = fadeOut() + scaleOut()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 16.dp, top = 8.dp),
+                                horizontalArrangement = Arrangement.Start
+                            ) {
+                                SiriOrb(size = 32.dp)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        AnimatedVisibility(
+            visible = showScrollToBottomButton,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 20.dp, bottom = 84.dp),
+            enter = fadeIn() + scaleIn(),
+            exit = fadeOut() + scaleOut()
+        ) {
+            FloatingActionButton(
+                onClick = {
+                    autoScrollEnabled = true
+                    scope.launch {
+                        if (totalItems > 0) {
+                            listState.animateScrollToItem(totalItems - 1)
+                        }
+                    }
+                }
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.ArrowDownward,
+                    contentDescription = "Scroll to bottom"
                 )
+            }
+        }
+    }
+
+    selectedUserMessage?.let { targetMessage ->
+        ModalBottomSheet(
+            onDismissRequest = { selectedUserMessage = null }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                TextButton(
+                    onClick = {
+                        clipboard.setText(AnnotatedString(targetMessage.content))
+                        selectedUserMessage = null
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Copy")
+                }
+                TextButton(
+                    onClick = {
+                        onDeleteUserMessage(targetMessage.id)
+                        selectedUserMessage = null
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Delete")
+                }
+                TextButton(
+                    onClick = {
+                        onShareMessage(targetMessage.content)
+                        selectedUserMessage = null
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Share")
+                }
             }
         }
     }
@@ -288,11 +441,12 @@ private fun ChatStatusCard(
 @Composable
 private fun ChatBubble(
     message: ChatMessage,
-    onReadAloud: (String) -> Unit
+    onReadAloud: (String) -> Unit,
+    onUserLongPress: (ChatMessage) -> Unit
 ) {
     val isAssistant = message.role == ChatRole.Assistant
     val clipboard = LocalClipboardManager.current
-    var menuExpanded by remember { mutableStateOf(false) }
+    var assistantMenuExpanded by remember { mutableStateOf(false) }
     val alignment = if (isAssistant) Alignment.CenterStart else Alignment.CenterEnd
 
     Box(
@@ -303,10 +457,13 @@ private fun ChatBubble(
             val bubbleModifier = if (isAssistant) {
                 Modifier.combinedClickable(
                     onClick = {},
-                    onLongClick = { menuExpanded = true }
+                    onLongClick = { assistantMenuExpanded = true }
                 )
             } else {
-                Modifier
+                Modifier.combinedClickable(
+                    onClick = {},
+                    onLongClick = { onUserLongPress(message) }
+                )
             }
 
             Surface(
@@ -318,195 +475,39 @@ private fun ChatBubble(
                     MaterialTheme.colorScheme.primaryContainer
                 }
             ) {
+                val textColor = if (isAssistant) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.onPrimaryContainer
+                }
                 MarkdownMessage(
                     text = message.content,
-                    role = message.role
+                    textColor = textColor,
+                    onCodeCopied = {}
                 )
             }
 
-            DropdownMenu(
-                expanded = menuExpanded,
-                onDismissRequest = { menuExpanded = false }
-            ) {
-                DropdownMenuItem(
-                    text = { Text("Copy") },
-                    onClick = {
-                        menuExpanded = false
-                        clipboard.setText(AnnotatedString(message.content))
-                    }
-                )
-                DropdownMenuItem(
-                    text = { Text("Read Aloud") },
-                    onClick = {
-                        menuExpanded = false
-                        onReadAloud(message.content)
-                    }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun MarkdownMessage(
-    text: String,
-    role: ChatRole
-) {
-    val segments = remember(text) { splitMarkdownSegments(text) }
-    val textColor = if (role == ChatRole.Assistant) {
-        MaterialTheme.colorScheme.onSurfaceVariant
-    } else {
-        MaterialTheme.colorScheme.onPrimaryContainer
-    }
-
-    Column(
-        modifier = Modifier.padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        segments.forEach { segment ->
-            when (segment) {
-                is MarkdownSegment.Text -> {
-                    if (segment.value.isNotBlank()) {
-                        Text(
-                            text = buildInlineMarkdown(segment.value),
-                            color = textColor,
-                            style = MaterialTheme.typography.bodyLarge
-                        )
-                    }
-                }
-
-                is MarkdownSegment.Code -> {
-                    CodeBlock(
-                        language = segment.language,
-                        code = segment.code
+            if (isAssistant) {
+                DropdownMenu(
+                    expanded = assistantMenuExpanded,
+                    onDismissRequest = { assistantMenuExpanded = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Copy") },
+                        onClick = {
+                            assistantMenuExpanded = false
+                            clipboard.setText(AnnotatedString(message.content))
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Read Aloud") },
+                        onClick = {
+                            assistantMenuExpanded = false
+                            onReadAloud(message.content)
+                        }
                     )
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun CodeBlock(
-    language: String?,
-    code: String
-) {
-    val clipboard = LocalClipboardManager.current
-
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = Color(0xFF0A1016),
-        tonalElevation = 2.dp,
-        shape = MaterialTheme.shapes.medium
-    ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 10.dp, end = 4.dp, top = 6.dp, bottom = 4.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = language?.ifBlank { "code" } ?: "code",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                TextButton(
-                    onClick = { clipboard.setText(AnnotatedString(code)) }
-                ) {
-                    Text("Copy")
-                }
-            }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            Text(
-                text = code.trimEnd(),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(10.dp),
-                fontFamily = FontFamily.Monospace,
-                color = MaterialTheme.colorScheme.onSurface,
-                style = MaterialTheme.typography.bodyMedium
-            )
-        }
-    }
-}
-
-private sealed class MarkdownSegment {
-    data class Text(val value: String) : MarkdownSegment()
-    data class Code(val language: String?, val code: String) : MarkdownSegment()
-}
-
-private fun splitMarkdownSegments(input: String): List<MarkdownSegment> {
-    val codeBlockRegex = Regex("(?s)```([A-Za-z0-9_+-]*)\\n(.*?)```")
-    val segments = mutableListOf<MarkdownSegment>()
-    var cursor = 0
-
-    codeBlockRegex.findAll(input).forEach { match ->
-        if (match.range.first > cursor) {
-            segments += MarkdownSegment.Text(input.substring(cursor, match.range.first))
-        }
-        val language = match.groups[1]?.value?.ifBlank { null }
-        val code = match.groups[2]?.value.orEmpty()
-        segments += MarkdownSegment.Code(language = language, code = code)
-        cursor = match.range.last + 1
-    }
-
-    if (cursor < input.length) {
-        segments += MarkdownSegment.Text(input.substring(cursor))
-    }
-
-    if (segments.isEmpty()) {
-        segments += MarkdownSegment.Text(input)
-    }
-
-    return segments
-}
-
-private fun buildInlineMarkdown(input: String): AnnotatedString {
-    val inlineRegex = Regex("(`[^`]+`|\\*\\*[^*]+\\*\\*|\\*[^*]+\\*)")
-    var cursor = 0
-
-    return buildAnnotatedString {
-        inlineRegex.findAll(input).forEach { match ->
-            if (match.range.first > cursor) {
-                append(input.substring(cursor, match.range.first))
-            }
-
-            val token = match.value
-            when {
-                token.startsWith("`") && token.endsWith("`") -> {
-                    withStyle(
-                        style = SpanStyle(
-                            fontFamily = FontFamily.Monospace,
-                            background = Color(0x332A3A48)
-                        )
-                    ) {
-                        append(token.removeSurrounding("`"))
-                    }
-                }
-
-                token.startsWith("**") && token.endsWith("**") -> {
-                    withStyle(style = SpanStyle(fontWeight = FontWeight.SemiBold)) {
-                        append(token.removePrefix("**").removeSuffix("**"))
-                    }
-                }
-
-                token.startsWith("*") && token.endsWith("*") -> {
-                    withStyle(style = SpanStyle(fontStyle = FontStyle.Italic)) {
-                        append(token.removePrefix("*").removeSuffix("*"))
-                    }
-                }
-
-                else -> append(token)
-            }
-
-            cursor = match.range.last + 1
-        }
-
-        if (cursor < input.length) {
-            append(input.substring(cursor))
         }
     }
 }

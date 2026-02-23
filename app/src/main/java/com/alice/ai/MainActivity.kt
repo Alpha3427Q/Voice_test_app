@@ -3,7 +3,7 @@ package com.alice.ai
 import android.Manifest
 import android.content.Intent
 import android.content.SharedPreferences
-import android.media.MediaPlayer
+import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -46,7 +46,9 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.alice.ai.data.settings.SettingsRepository
 import com.alice.ai.data.settings.StoredSettings
+import com.alice.ai.ui.chat.AudioPlayerBottomSheet
 import com.alice.ai.ui.chat.ChatScreen
+import com.alice.ai.ui.history.ChatHistoryScreen
 import com.alice.ai.ui.settings.SettingsScreen
 import com.alice.ai.viewmodel.ChatViewModel
 import com.alice.ai.viewmodel.OnlineSettingsValidationResult
@@ -63,6 +65,7 @@ import java.util.concurrent.TimeUnit
 private const val PREFS_NAME = "alice_settings"
 private const val DEFAULT_TTS_URL = "https://lonekirito-asuna3456.hf.space/speak"
 private const val NETWORK_TIMEOUT_MINUTES = 45L
+private const val HISTORY_ROUTE = "history"
 
 private val STORAGE_PERMISSIONS = arrayOf(
     Manifest.permission.READ_MEDIA_IMAGES,
@@ -109,12 +112,12 @@ private fun AliceApp(
             .callTimeout(NETWORK_TIMEOUT_MINUTES, TimeUnit.MINUTES)
             .build()
     }
-    val mediaPlayerState = remember { mutableStateOf<MediaPlayer?>(null) }
     val uiState by chatViewModel.uiState.collectAsState()
 
     var ttsApiUrl by rememberSaveable {
         mutableStateOf(settingsRepository.getTtsApiUrl(DEFAULT_TTS_URL))
     }
+    var currentTtsFile by remember { mutableStateOf<File?>(null) }
 
     val initialOllamaUrl = remember { settingsRepository.getOllamaServerUrl() }
     val initialOllamaApiKey = remember { settingsRepository.ollamaApiKey }
@@ -123,12 +126,8 @@ private fun AliceApp(
     val normalizedInitialSelectedModel = remember {
         initialSelectedModel.removePrefix("Online: ").trim()
     }
-    var ollamaServerUrlDraft by rememberSaveable {
-        mutableStateOf(initialOllamaUrl)
-    }
-    var ollamaApiKeyDraft by rememberSaveable {
-        mutableStateOf(initialOllamaApiKey)
-    }
+    var ollamaServerUrlDraft by rememberSaveable { mutableStateOf(initialOllamaUrl) }
+    var ollamaApiKeyDraft by rememberSaveable { mutableStateOf(initialOllamaApiKey) }
     var hasRestoredSelection by rememberSaveable {
         mutableStateOf(initialSelectedModel.isBlank())
     }
@@ -197,8 +196,7 @@ private fun AliceApp(
 
     DisposableEffect(Unit) {
         onDispose {
-            mediaPlayerState.value?.release()
-            mediaPlayerState.value = null
+            currentTtsFile?.delete()
         }
     }
 
@@ -250,6 +248,7 @@ private fun AliceApp(
                     selectedModel = uiState.selectedModel,
                     availableModels = uiState.availableModels,
                     isGenerating = uiState.isGenerating,
+                    isWaitingForResponse = uiState.isWaitingForResponse,
                     activeContextCount = uiState.activeContext.size,
                     statusMessage = uiState.statusMessage,
                     errorMessage = uiState.errorMessage,
@@ -262,9 +261,9 @@ private fun AliceApp(
                     onReadAloud = { text ->
                         val safeText = text.trim()
                         if (safeText.isNotEmpty()) {
-                            val endpoint = ttsApiUrl.ifBlank { DEFAULT_TTS_URL }
                             scope.launch {
                                 try {
+                                    val endpoint = ttsApiUrl.ifBlank { DEFAULT_TTS_URL }
                                     val wavFile = withContext(Dispatchers.IO) {
                                         downloadTtsWav(
                                             client = httpClient,
@@ -273,23 +272,8 @@ private fun AliceApp(
                                             cacheDir = context.cacheDir
                                         )
                                     }
-                                    mediaPlayerState.value?.release()
-                                    mediaPlayerState.value = MediaPlayer().apply {
-                                        setDataSource(wavFile.absolutePath)
-                                        setOnCompletionListener { player ->
-                                            player.release()
-                                            mediaPlayerState.value = null
-                                            wavFile.delete()
-                                        }
-                                        setOnErrorListener { player, _, _ ->
-                                            player.release()
-                                            mediaPlayerState.value = null
-                                            wavFile.delete()
-                                            true
-                                        }
-                                        prepare()
-                                        start()
-                                    }
+                                    currentTtsFile?.delete()
+                                    currentTtsFile = wavFile
                                 } catch (error: Exception) {
                                     Toast.makeText(
                                         context,
@@ -299,7 +283,35 @@ private fun AliceApp(
                                 }
                             }
                         }
-                    }
+                    },
+                    onDeleteUserMessage = chatViewModel::deleteUserMessage,
+                    onShareMessage = { message ->
+                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, message)
+                        }
+                        context.startActivity(Intent.createChooser(shareIntent, "Share message"))
+                    },
+                    onHistoryClick = { navController.navigate(HISTORY_ROUTE) },
+                    onNewChatClick = chatViewModel::startNewChat
+                )
+            }
+
+            composable(HISTORY_ROUTE) {
+                ChatHistoryScreen(
+                    sessions = uiState.sessions.map { session ->
+                        com.alice.ai.data.local.ChatSessionSummary(
+                            id = session.id,
+                            title = session.title,
+                            createdAt = session.createdAt
+                        )
+                    },
+                    onBack = { navController.popBackStack() },
+                    onOpenSession = { sessionId ->
+                        chatViewModel.openChatSession(sessionId)
+                        navController.popBackStack()
+                    },
+                    onDeleteSession = chatViewModel::deleteChatSession
                 )
             }
 
@@ -363,6 +375,18 @@ private fun AliceApp(
             }
         }
     }
+
+    currentTtsFile?.let { file ->
+        AudioPlayerBottomSheet(
+            mediaUrl = Uri.fromFile(file).toString(),
+            onDismissRequest = {
+                file.delete()
+                if (currentTtsFile == file) {
+                    currentTtsFile = null
+                }
+            }
+        )
+    }
 }
 
 private fun downloadTtsWav(
@@ -397,20 +421,20 @@ private fun AliceDarkTheme(content: @Composable () -> Unit) {
 }
 
 private fun aliceDarkColorScheme(): ColorScheme = darkColorScheme(
-    primary = Color(0xFF88C9FF),
-    onPrimary = Color(0xFF003351),
-    primaryContainer = Color(0xFF004A73),
-    onPrimaryContainer = Color(0xFFD1E8FF),
-    secondary = Color(0xFFB8C8D9),
-    onSecondary = Color(0xFF22323F),
-    secondaryContainer = Color(0xFF374856),
-    onSecondaryContainer = Color(0xFFD3E4F5),
-    background = Color(0xFF090F14),
-    onBackground = Color(0xFFDDE5ED),
-    surface = Color(0xFF111A22),
-    onSurface = Color(0xFFD4DEE7),
-    surfaceVariant = Color(0xFF1C2833),
-    onSurfaceVariant = Color(0xFFBCC8D3),
+    primary = Color(0xFF7F5AF0),
+    onPrimary = Color(0xFFEBE4FF),
+    primaryContainer = Color(0xFF2A1E52),
+    onPrimaryContainer = Color(0xFFE1D7FF),
+    secondary = Color(0xFF2CB1FF),
+    onSecondary = Color(0xFF001E32),
+    secondaryContainer = Color(0xFF123C5E),
+    onSecondaryContainer = Color(0xFFD1EEFF),
+    background = Color(0xFF0B0F1A),
+    onBackground = Color(0xFFE6EBFF),
+    surface = Color(0xFF101624),
+    onSurface = Color(0xFFE3E8FA),
+    surfaceVariant = Color(0xFF1A2338),
+    onSurfaceVariant = Color(0xFFB9C4DE),
     error = Color(0xFFFFB4AB),
     onError = Color(0xFF690005)
 )

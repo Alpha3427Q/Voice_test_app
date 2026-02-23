@@ -18,8 +18,11 @@ sealed class OfflineLlamaGenerateResult {
 sealed class OfflineLlamaError(val message: String) {
     data object ModelFileNotFound : OfflineLlamaError("Model file not found")
     data object ModelLoadFailure : OfflineLlamaError("Model load failure")
+    data object PermissionDenied : OfflineLlamaError("Permission denied")
+    data object OutOfMemory : OfflineLlamaError("Out of memory")
     data object NativeLibraryMissing : OfflineLlamaError("Native library missing")
-    data object ModelNotLoaded : OfflineLlamaError("Model load failure")
+    data object ModelNotLoaded : OfflineLlamaError("Model not loaded")
+    data object NoOutput : OfflineLlamaError("Offline engine error: no output produced")
     data class Unknown(private val reason: String) : OfflineLlamaError(reason)
 }
 
@@ -54,6 +57,10 @@ class OfflineLlamaEngine {
             Log.e(TAG, "Model file not found: $normalized")
             return@withContext OfflineLlamaResult.Failure(OfflineLlamaError.ModelFileNotFound)
         }
+        if (!File(normalized).canRead()) {
+            Log.e(TAG, "Permission denied for model path: $normalized")
+            return@withContext OfflineLlamaResult.Failure(OfflineLlamaError.PermissionDenied)
+        }
 
         if (isModelLoaded(normalized)) {
             return@withContext OfflineLlamaResult.Success
@@ -67,7 +74,15 @@ class OfflineLlamaEngine {
                 Log.e(TAG, "Model load failure for path: $normalized")
                 OfflineLlamaResult.Failure(OfflineLlamaError.ModelLoadFailure)
             }
+        }.recoverCatching { throwable ->
+            if (throwable is OutOfMemoryError) {
+                throw IllegalStateException(OfflineLlamaError.OutOfMemory.message, throwable)
+            }
+            throw throwable
         }.getOrElse { throwable ->
+            if (throwable.message?.contains(OfflineLlamaError.OutOfMemory.message, ignoreCase = true) == true) {
+                return@getOrElse OfflineLlamaResult.Failure(OfflineLlamaError.OutOfMemory)
+            }
             Log.e(TAG, "Model load failure: ${throwable.message}")
             OfflineLlamaResult.Failure(
                 OfflineLlamaError.Unknown(throwable.message ?: OfflineLlamaError.ModelLoadFailure.message)
@@ -75,13 +90,22 @@ class OfflineLlamaEngine {
         }
     }
 
-    suspend fun unloadModel(): OfflineLlamaResult = withContext(Dispatchers.IO) {
+    suspend fun unloadModel(modelPath: String? = null): OfflineLlamaResult = withContext(Dispatchers.IO) {
         if (!LlamaJniBridge.isLibraryLoaded()) {
             return@withContext OfflineLlamaResult.Failure(OfflineLlamaError.NativeLibraryMissing)
         }
 
+        val normalizedTarget = modelPath?.trim().orEmpty()
+        if (normalizedTarget.isNotEmpty()) {
+            val active = LlamaJniBridge.getActiveModelPath().orEmpty()
+            if (active.isNotEmpty() && active != normalizedTarget) {
+                return@withContext OfflineLlamaResult.Success
+            }
+        }
+
         return@withContext runCatching {
             LlamaJniBridge.unloadModel()
+            Log.i(TAG, "Offline model unloaded")
             OfflineLlamaResult.Success
         }.getOrElse { throwable ->
             Log.e(TAG, "Failed to unload model: ${throwable.message}")
@@ -111,7 +135,7 @@ class OfflineLlamaEngine {
             ).trim()
 
             if (output.isBlank()) {
-                OfflineLlamaGenerateResult.Failure(OfflineLlamaError.ModelLoadFailure)
+                OfflineLlamaGenerateResult.Failure(OfflineLlamaError.NoOutput)
             } else {
                 OfflineLlamaGenerateResult.Success(output)
             }

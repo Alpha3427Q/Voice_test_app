@@ -28,6 +28,34 @@ class SettingsRepository(
     fun getSelectedModel(): String =
         sharedPreferences.getString(KEY_SELECTED_MODEL, "").orEmpty()
 
+    fun saveSelectedModel(model: String) {
+        sharedPreferences.edit()
+            .putString(KEY_SELECTED_MODEL, model)
+            .apply()
+    }
+
+    fun saveOfflineGgufUri(uri: String) {
+        sharedPreferences.edit()
+            .putString(KEY_GGUF_URI, uri)
+            .apply()
+    }
+
+    fun saveOnlineCredentials(
+        ollamaServerUrl: String,
+        ollamaApiKey: String
+    ) {
+        sharedPreferences.edit()
+            .putString(KEY_OLLAMA_URL, ollamaServerUrl)
+            .putString(KEY_OLLAMA_API_KEY, ollamaApiKey)
+            .apply()
+    }
+
+    fun saveTtsApiUrl(ttsApiUrl: String) {
+        sharedPreferences.edit()
+            .putString(KEY_TTS_URL, ttsApiUrl)
+            .apply()
+    }
+
     fun save(settings: StoredSettings) {
         sharedPreferences.edit()
             .putString(KEY_OLLAMA_URL, settings.ollamaServerUrl)

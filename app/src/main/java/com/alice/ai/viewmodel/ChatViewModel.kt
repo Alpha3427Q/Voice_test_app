@@ -4,6 +4,9 @@ import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.alice.ai.data.local.AliceDatabase
+import com.alice.ai.data.local.ChatStorageRepository
+import com.alice.ai.data.local.MessageEntity
 import com.alice.ai.data.model.ModelPathResult
 import com.alice.ai.data.model.ModelRepository
 import com.alice.ai.data.offline.LlamaJniBridge
@@ -25,6 +28,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import okhttp3.OkHttpClient
 import java.time.Clock
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -53,6 +57,12 @@ sealed class OnlineSettingsValidationResult {
     data class Failure(val message: String) : OnlineSettingsValidationResult()
 }
 
+data class ChatSessionUi(
+    val id: String,
+    val title: String,
+    val createdAt: Long
+)
+
 data class ChatUiState(
     val messages: List<ChatMessage> = emptyList(),
     val activeContext: List<ChatMessage> = emptyList(),
@@ -65,8 +75,11 @@ data class ChatUiState(
     val selectedModel: String = DEFAULT_ONLINE_MODEL,
     val mode: EngineMode = EngineMode.Online,
     val isGenerating: Boolean = false,
+    val isWaitingForResponse: Boolean = false,
     val statusMessage: String? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val currentSessionId: String = "",
+    val sessions: List<ChatSessionUi> = emptyList()
 )
 
 class ChatViewModel(
@@ -76,10 +89,15 @@ class ChatViewModel(
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
+    private val _isWaitingForResponse = MutableStateFlow(false)
+    val isWaitingForResponse: StateFlow<Boolean> = _isWaitingForResponse.asStateFlow()
+
     private var settingsRepository: SettingsRepository? = null
     private var modelRepository: ModelRepository? = null
+    private var chatStorageRepository: ChatStorageRepository? = null
+
     private val onlineOllamaService = OnlineOllamaService(
-        okHttpClient = okhttp3.OkHttpClient.Builder()
+        okHttpClient = OkHttpClient.Builder()
             .connectTimeout(OLLAMA_TIMEOUT_MINUTES, TimeUnit.MINUTES)
             .readTimeout(OLLAMA_TIMEOUT_MINUTES, TimeUnit.MINUTES)
             .writeTimeout(OLLAMA_TIMEOUT_MINUTES, TimeUnit.MINUTES)
@@ -87,12 +105,21 @@ class ChatViewModel(
             .build()
     )
     private val offlineLlamaEngine = OfflineLlamaEngine()
+
     private var statusMessageJob: Job? = null
+    private var generationJob: Job? = null
     private var onlineModelNames: List<String> = listOf(DEFAULT_ONLINE_MODEL)
 
     fun attachAppContext(context: Context) {
         if (modelRepository == null) {
             modelRepository = ModelRepository(context.applicationContext)
+        }
+        if (chatStorageRepository == null) {
+            val database = AliceDatabase.getInstance(context.applicationContext)
+            chatStorageRepository = ChatStorageRepository(database.chatDao())
+            viewModelScope.launch {
+                loadOrCreateInitialSession()
+            }
         }
     }
 
@@ -123,6 +150,7 @@ class ChatViewModel(
                     mode = state.mode,
                     mergedModels = mergedModels
                 )
+                settingsRepository?.saveSelectedModel(selected)
                 state.copy(
                     ollamaServerUrl = "",
                     availableModels = mergedModels,
@@ -146,7 +174,8 @@ class ChatViewModel(
 
     fun updateOfflineModelPath(path: String) {
         val trimmed = path.trim()
-        val previous = _uiState.value.offlineModelPath
+        val previousPath = _uiState.value.offlineModelPath
+
         _uiState.update { state ->
             val mergedModels = mergeModelOptions(onlineModelNames, trimmed)
             val fallback = selectFallbackModel(
@@ -154,9 +183,11 @@ class ChatViewModel(
                 mode = state.mode,
                 mergedModels = mergedModels
             )
+            settingsRepository?.saveSelectedModel(fallback)
+            settingsRepository?.saveOfflineGgufUri(trimmed)
             state.copy(
                 offlineModelPath = trimmed,
-                resolvedOfflineModelPath = if (trimmed == state.offlineModelPath) {
+                resolvedOfflineModelPath = if (trimmed == previousPath) {
                     state.resolvedOfflineModelPath
                 } else {
                     ""
@@ -167,7 +198,7 @@ class ChatViewModel(
             )
         }
 
-        if (trimmed.isBlank() || (previous.isNotBlank() && previous != trimmed)) {
+        if (trimmed.isBlank() || (previousPath.isNotBlank() && previousPath != trimmed)) {
             viewModelScope.launch {
                 unloadOfflineModelWithStatus()
             }
@@ -183,12 +214,11 @@ class ChatViewModel(
 
         if (normalizedModel.startsWith(OFFLINE_PREFIX)) {
             if (state.offlineModelPath.isBlank()) {
-                _uiState.update {
-                    it.copy(errorMessage = "Model file not found")
-                }
+                _uiState.update { it.copy(errorMessage = "Model file not found") }
                 return
             }
 
+            settingsRepository?.saveSelectedModel(normalizedModel)
             _uiState.update {
                 it.copy(
                     selectedModel = normalizedModel,
@@ -199,18 +229,14 @@ class ChatViewModel(
 
             viewModelScope.launch {
                 when (val prepared = prepareAndLoadOfflineModel()) {
-                    is OfflinePreparationResult.Success -> {
-                        // already surfaced by status updates
-                    }
-
+                    is OfflinePreparationResult.Success -> Unit
                     is OfflinePreparationResult.Failure -> {
-                        _uiState.update {
-                            it.copy(errorMessage = prepared.message)
-                        }
+                        _uiState.update { it.copy(errorMessage = prepared.message) }
                     }
                 }
             }
         } else {
+            settingsRepository?.saveSelectedModel(normalizedModel)
             _uiState.update {
                 it.copy(
                     selectedModel = normalizedModel,
@@ -255,6 +281,7 @@ class ChatViewModel(
                         mode = current.mode,
                         mergedModels = mergedModels
                     )
+                    settingsRepository?.saveSelectedModel(selected)
                     current.copy(
                         availableModels = mergedModels,
                         selectedModel = selected,
@@ -263,10 +290,8 @@ class ChatViewModel(
                     )
                 }
             } else {
-                val failureMessage = result.exceptionOrNull()?.message ?: "Invalid endpoint"
-                _uiState.update {
-                    it.copy(errorMessage = failureMessage)
-                }
+                val message = result.exceptionOrNull()?.message ?: "Invalid endpoint"
+                _uiState.update { it.copy(errorMessage = message) }
             }
         }
     }
@@ -282,6 +307,7 @@ class ChatViewModel(
 
         return when (onlineOllamaService.validateConnection(normalizedUrl, ollamaApiKey.trim())) {
             OllamaConnectionResult.Success -> {
+                _uiState.update { it.copy(errorMessage = null) }
                 setTransientStatus("Connection successful")
                 OnlineSettingsValidationResult.Success
             }
@@ -320,6 +346,13 @@ class ChatViewModel(
         if (userText.isBlank() || state.isGenerating) {
             return
         }
+        if (state.currentSessionId.isBlank()) {
+            viewModelScope.launch {
+                loadOrCreateInitialSession()
+            }
+            _uiState.update { it.copy(errorMessage = "Chat session is initializing. Try again.") }
+            return
+        }
 
         val userMessage = ChatMessage(role = ChatRole.User, content = userText)
         _uiState.update { current ->
@@ -329,25 +362,153 @@ class ChatViewModel(
                 activeContext = updatedMessages.takeLast(CONTEXT_WINDOW_SIZE),
                 inputText = "",
                 isGenerating = true,
+                isWaitingForResponse = true,
                 errorMessage = null
+            )
+        }
+        _isWaitingForResponse.value = true
+
+        viewModelScope.launch {
+            persistMessage(
+                sessionId = state.currentSessionId,
+                message = userMessage
+            )
+            generationJob?.cancel()
+            generationJob = launch {
+                val stateAtStart = _uiState.value
+                val contextWindow = stateAtStart.messages.takeLast(CONTEXT_WINDOW_SIZE)
+                val systemPrompt = buildDynamicSystemPrompt()
+
+                when (stateAtStart.mode) {
+                    EngineMode.Online -> generateOnlineReplyStreaming(
+                        stateAtStart = stateAtStart,
+                        contextWindow = contextWindow,
+                        systemPrompt = systemPrompt
+                    )
+
+                    EngineMode.Offline -> generateOfflineReply(
+                        contextWindow = contextWindow,
+                        systemPrompt = systemPrompt
+                    )
+                }
+            }
+        }
+    }
+
+    fun deleteUserMessage(messageId: String) {
+        _uiState.update { state ->
+            val remaining = state.messages.filterNot { it.id == messageId }
+            state.copy(
+                messages = remaining,
+                activeContext = remaining.takeLast(CONTEXT_WINDOW_SIZE)
             )
         }
 
         viewModelScope.launch {
-            val stateAtStart = _uiState.value
-            val contextWindow = stateAtStart.messages.takeLast(CONTEXT_WINDOW_SIZE)
-            val systemPrompt = buildDynamicSystemPrompt()
+            chatStorageRepository?.deleteMessage(messageId)
+        }
+    }
 
-            when (stateAtStart.mode) {
-                EngineMode.Online -> generateOnlineReplyStreaming(
-                    stateAtStart = stateAtStart,
-                    contextWindow = contextWindow,
-                    systemPrompt = systemPrompt
+    fun startNewChat() {
+        val state = _uiState.value
+        if (state.isGenerating) {
+            setTransientStatus("Wait for current response to finish")
+            return
+        }
+        viewModelScope.launch {
+            val repository = chatStorageRepository ?: return@launch
+            val session = repository.createSession()
+            val sessions = repository.listSessions().map { info ->
+                ChatSessionUi(id = info.id, title = info.title, createdAt = info.createdAt)
+            }
+            _uiState.update {
+                it.copy(
+                    currentSessionId = session.id,
+                    messages = emptyList(),
+                    activeContext = emptyList(),
+                    sessions = sessions,
+                    errorMessage = null
                 )
+            }
+        }
+    }
 
-                EngineMode.Offline -> generateOfflineReply(
-                    contextWindow = contextWindow,
-                    systemPrompt = systemPrompt
+    fun openChatSession(sessionId: String) {
+        if (sessionId.isBlank()) {
+            return
+        }
+        val state = _uiState.value
+        if (state.isGenerating) {
+            setTransientStatus("Wait for current response to finish")
+            return
+        }
+        viewModelScope.launch {
+            val repository = chatStorageRepository ?: return@launch
+            val session = repository.ensureSession(sessionId)
+            val messages = repository.getMessages(session.id)
+                .map { it.toChatMessage() }
+                .takeLast(MAX_STORED_MESSAGES)
+            val sessions = repository.listSessions().map { info ->
+                ChatSessionUi(id = info.id, title = info.title, createdAt = info.createdAt)
+            }
+            _uiState.update {
+                it.copy(
+                    currentSessionId = session.id,
+                    messages = messages,
+                    activeContext = messages.takeLast(CONTEXT_WINDOW_SIZE),
+                    sessions = sessions,
+                    errorMessage = null
+                )
+            }
+        }
+    }
+
+    fun deleteChatSession(sessionId: String) {
+        if (sessionId.isBlank()) {
+            return
+        }
+        viewModelScope.launch {
+            val repository = chatStorageRepository ?: return@launch
+            repository.deleteSession(sessionId)
+
+            val sessions = repository.listSessions()
+            if (sessions.isEmpty()) {
+                val created = repository.createSession()
+                _uiState.update {
+                    it.copy(
+                        currentSessionId = created.id,
+                        messages = emptyList(),
+                        activeContext = emptyList(),
+                        sessions = listOf(
+                            ChatSessionUi(
+                                id = created.id,
+                                title = created.title,
+                                createdAt = created.createdAt
+                            )
+                        )
+                    )
+                }
+                return@launch
+            }
+
+            val current = _uiState.value.currentSessionId
+            val keepCurrent = sessions.any { it.id == current }
+            val nextSession = if (keepCurrent) {
+                sessions.first { it.id == current }
+            } else {
+                sessions.first()
+            }
+            val nextMessages = repository.getMessages(nextSession.id)
+                .map { it.toChatMessage() }
+                .takeLast(MAX_STORED_MESSAGES)
+            _uiState.update {
+                it.copy(
+                    currentSessionId = nextSession.id,
+                    messages = nextMessages,
+                    activeContext = nextMessages.takeLast(CONTEXT_WINDOW_SIZE),
+                    sessions = sessions.map { info ->
+                        ChatSessionUi(id = info.id, title = info.title, createdAt = info.createdAt)
+                    }
                 )
             }
         }
@@ -355,8 +516,28 @@ class ChatViewModel(
 
     override fun onCleared() {
         statusMessageJob?.cancel()
+        generationJob?.cancel()
         runCatching { LlamaJniBridge.unloadModel() }
         super.onCleared()
+    }
+
+    private suspend fun loadOrCreateInitialSession() {
+        val repository = chatStorageRepository ?: return
+        val session = repository.ensureSession(_uiState.value.currentSessionId.ifBlank { null })
+        val messages = repository.getMessages(session.id)
+            .map { it.toChatMessage() }
+            .takeLast(MAX_STORED_MESSAGES)
+        val sessions = repository.listSessions().map { info ->
+            ChatSessionUi(id = info.id, title = info.title, createdAt = info.createdAt)
+        }
+        _uiState.update {
+            it.copy(
+                currentSessionId = session.id,
+                messages = messages,
+                activeContext = messages.takeLast(CONTEXT_WINDOW_SIZE),
+                sessions = sessions
+            )
+        }
     }
 
     private suspend fun generateOnlineReplyStreaming(
@@ -407,16 +588,31 @@ class ChatViewModel(
                 model = selectedModel,
                 messages = requestMessages,
                 onDelta = { delta ->
-                    emittedAnyChunk = true
+                    if (!emittedAnyChunk) {
+                        emittedAnyChunk = true
+                        setWaitingForResponse(false)
+                    }
                     appendAssistantChunk(assistantMessageId, delta)
                 }
             )
         ) {
             OllamaChatStreamResult.Success -> {
-                if (!emittedAnyChunk) {
+                val finalText = _uiState.value.messages.firstOrNull { it.id == assistantMessageId }
+                    ?.content
+                    .orEmpty()
+                    .trim()
+                if (!emittedAnyChunk || finalText.isBlank()) {
                     removeMessageById(assistantMessageId)
                     finishGenerationWithError("Online engine returned an empty response")
                 } else {
+                    persistMessage(
+                        sessionId = _uiState.value.currentSessionId,
+                        message = ChatMessage(
+                            id = assistantMessageId,
+                            role = ChatRole.Assistant,
+                            content = finalText
+                        )
+                    )
                     finishGeneration()
                 }
             }
@@ -424,6 +620,21 @@ class ChatViewModel(
             is OllamaChatStreamResult.Failure -> {
                 if (!emittedAnyChunk) {
                     removeMessageById(assistantMessageId)
+                } else {
+                    val partialText = _uiState.value.messages.firstOrNull { it.id == assistantMessageId }
+                        ?.content
+                        .orEmpty()
+                        .trim()
+                    if (partialText.isNotBlank()) {
+                        persistMessage(
+                            sessionId = _uiState.value.currentSessionId,
+                            message = ChatMessage(
+                                id = assistantMessageId,
+                                role = ChatRole.Assistant,
+                                content = partialText
+                            )
+                        )
+                    }
                 }
                 finishGenerationWithError(streamResult.message)
             }
@@ -436,8 +647,9 @@ class ChatViewModel(
     ) {
         val preparation = prepareAndLoadOfflineModel()
         if (preparation is OfflinePreparationResult.Failure) {
+            setWaitingForResponse(false)
             appendAssistantMessage(
-                "Offline model not loaded: ${preparation.message}. Tap Settings → Offline Engine to select or re-add the model."
+                "Offline model not loaded: ${preparation.message}. Tap Settings \u2192 Offline Engine to select or re-add the model."
             )
             finishGeneration()
             return
@@ -454,29 +666,41 @@ class ChatViewModel(
             append("\nAlice:")
         }
 
-        when (
-            val result = offlineLlamaEngine.generateText(
-                prompt = prompt,
-                maxTokens = 512,
-                temperature = 0.7f
-            )
-        ) {
+        val result = offlineLlamaEngine.generateText(
+            prompt = prompt,
+            maxTokens = 512,
+            temperature = 0.7f
+        )
+        setWaitingForResponse(false)
+
+        when (result) {
             is OfflineLlamaGenerateResult.Success -> {
-                appendAssistantMessage(result.text)
+                val output = result.text.trim()
+                if (output.isBlank()) {
+                    appendAssistantMessage("Offline engine error: no output produced (see logs).")
+                } else {
+                    appendAssistantMessage(output)
+                }
             }
 
             is OfflineLlamaGenerateResult.Failure -> {
                 val message = when (result.error) {
                     OfflineLlamaError.ModelFileNotFound -> "Model file not found"
+                    OfflineLlamaError.PermissionDenied -> "Permission denied"
+                    OfflineLlamaError.OutOfMemory -> "Out of memory"
                     OfflineLlamaError.ModelLoadFailure -> "Model load failure"
                     OfflineLlamaError.NativeLibraryMissing -> "Native library missing"
-                    OfflineLlamaError.ModelNotLoaded -> "Model load failure"
+                    OfflineLlamaError.ModelNotLoaded -> "Model not loaded"
+                    OfflineLlamaError.NoOutput -> "Offline engine error: no output produced (see logs)."
                     is OfflineLlamaError.Unknown -> result.error.message
                 }
 
-                appendAssistantMessage(
-                    "Offline model not loaded: $message. Tap Settings → Offline Engine to select or re-add the model."
-                )
+                val friendlyMessage = if (result.error == OfflineLlamaError.NoOutput) {
+                    message
+                } else {
+                    "Offline model not loaded: $message. Tap Settings \u2192 Offline Engine to select or re-add the model."
+                }
+                appendAssistantMessage(friendlyMessage)
             }
         }
 
@@ -498,9 +722,7 @@ class ChatViewModel(
         } else {
             when (val pathResult = repository.resolveOfflineModelPath(offlineModelPath)) {
                 is ModelPathResult.Success -> {
-                    _uiState.update {
-                        it.copy(resolvedOfflineModelPath = pathResult.filePath)
-                    }
+                    _uiState.update { it.copy(resolvedOfflineModelPath = pathResult.filePath) }
                     pathResult.filePath
                 }
 
@@ -525,9 +747,12 @@ class ChatViewModel(
                 clearStatus()
                 val message = when (load.error) {
                     OfflineLlamaError.ModelFileNotFound -> "Model file not found"
+                    OfflineLlamaError.PermissionDenied -> "Permission denied"
+                    OfflineLlamaError.OutOfMemory -> "Out of memory"
                     OfflineLlamaError.ModelLoadFailure -> "Model load failure"
                     OfflineLlamaError.NativeLibraryMissing -> "Native library missing"
-                    OfflineLlamaError.ModelNotLoaded -> "Model load failure"
+                    OfflineLlamaError.ModelNotLoaded -> "Model not loaded"
+                    OfflineLlamaError.NoOutput -> "Offline engine error: no output produced (see logs)."
                     is OfflineLlamaError.Unknown -> load.error.message
                 }
                 Log.e(TAG, "Offline load failed: $message")
@@ -541,8 +766,9 @@ class ChatViewModel(
             return
         }
 
+        val targetPath = _uiState.value.resolvedOfflineModelPath.ifBlank { null }
         setStatus("Unloading offline model...")
-        when (val unload = offlineLlamaEngine.unloadModel()) {
+        when (val unload = offlineLlamaEngine.unloadModel(targetPath)) {
             OfflineLlamaResult.Success -> {
                 setTransientStatus("Offline model unloaded")
             }
@@ -551,9 +777,12 @@ class ChatViewModel(
                 clearStatus()
                 val message = when (unload.error) {
                     OfflineLlamaError.ModelFileNotFound -> "Model file not found"
+                    OfflineLlamaError.PermissionDenied -> "Permission denied"
+                    OfflineLlamaError.OutOfMemory -> "Out of memory"
                     OfflineLlamaError.ModelLoadFailure -> "Model load failure"
                     OfflineLlamaError.NativeLibraryMissing -> "Native library missing"
-                    OfflineLlamaError.ModelNotLoaded -> "Model load failure"
+                    OfflineLlamaError.ModelNotLoaded -> "Model not loaded"
+                    OfflineLlamaError.NoOutput -> "Offline engine error: no output produced (see logs)."
                     is OfflineLlamaError.Unknown -> unload.error.message
                 }
                 _uiState.update { it.copy(errorMessage = message) }
@@ -581,14 +810,18 @@ class ChatViewModel(
     }
 
     private fun appendAssistantMessage(content: String) {
+        val message = ChatMessage(role = ChatRole.Assistant, content = content)
         _uiState.update { state ->
-            val updatedMessages = (state.messages + ChatMessage(role = ChatRole.Assistant, content = content))
-                .takeLast(MAX_STORED_MESSAGES)
+            val updatedMessages = (state.messages + message).takeLast(MAX_STORED_MESSAGES)
             state.copy(
                 messages = updatedMessages,
                 activeContext = updatedMessages.takeLast(CONTEXT_WINDOW_SIZE)
             )
         }
+        persistMessage(
+            sessionId = _uiState.value.currentSessionId,
+            message = message
+        )
     }
 
     private fun removeMessageById(messageId: String) {
@@ -602,16 +835,24 @@ class ChatViewModel(
     }
 
     private fun finishGeneration() {
-        _uiState.update { it.copy(isGenerating = false) }
+        _uiState.update { it.copy(isGenerating = false, isWaitingForResponse = false) }
+        _isWaitingForResponse.value = false
     }
 
     private fun finishGenerationWithError(message: String) {
         _uiState.update {
             it.copy(
                 isGenerating = false,
+                isWaitingForResponse = false,
                 errorMessage = message
             )
         }
+        _isWaitingForResponse.value = false
+    }
+
+    private fun setWaitingForResponse(enabled: Boolean) {
+        _isWaitingForResponse.value = enabled
+        _uiState.update { it.copy(isWaitingForResponse = enabled) }
     }
 
     private fun resolveOllamaApiKey(preferred: String): String {
@@ -705,6 +946,36 @@ class ChatViewModel(
             .replace("[DYNAMIC_TIME]", dynamicTime)
             .replace("[DYNAMIC_DATE]", dynamicDate)
             .replace("[DYNAMIC_DAY]", dynamicDay)
+    }
+
+    private fun persistMessage(sessionId: String, message: ChatMessage) {
+        if (sessionId.isBlank()) {
+            return
+        }
+        viewModelScope.launch {
+            val repository = chatStorageRepository ?: return@launch
+            repository.saveMessage(
+                sessionId = sessionId,
+                messageId = message.id,
+                role = if (message.role == ChatRole.User) "user" else "assistant",
+                content = message.content
+            )
+            if (message.role == ChatRole.User) {
+                repository.updateSessionTitleFromMessage(sessionId, message.content)
+            }
+            val sessions = repository.listSessions().map { info ->
+                ChatSessionUi(id = info.id, title = info.title, createdAt = info.createdAt)
+            }
+            _uiState.update { it.copy(sessions = sessions) }
+        }
+    }
+
+    private fun MessageEntity.toChatMessage(): ChatMessage {
+        return ChatMessage(
+            id = id,
+            role = if (role.equals("user", ignoreCase = true)) ChatRole.User else ChatRole.Assistant,
+            content = content
+        )
     }
 
     private sealed class OfflinePreparationResult {

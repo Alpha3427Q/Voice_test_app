@@ -3,12 +3,17 @@ package com.alice.ai.data.online
 import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.JsonSyntaxException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okio.Buffer
 import java.io.IOException
 import java.net.SocketTimeoutException
 
@@ -41,6 +46,8 @@ class OnlineOllamaService(
 
     companion object {
         private const val TAG = "OnlineOllamaService"
+        private const val MAX_STREAM_RETRIES = 2
+        private const val STREAM_RETRY_DELAY_MS = 600L
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
 
@@ -76,17 +83,43 @@ class OnlineOllamaService(
             return@withContext OllamaChatStreamResult.Failure("Invalid endpoint")
         }
 
-        val request = buildChatRequest(
-            baseUrl = baseUrl,
-            apiKey = apiKey,
-            requestBody = OllamaChatRequest(
-                model = normalizedModel,
-                messages = messages,
-                stream = true
-            )
-        ) ?: return@withContext OllamaChatStreamResult.Failure("Invalid endpoint")
+        var lastFailure: String = "Online request failed"
+        var attempt = 0
+        while (attempt < MAX_STREAM_RETRIES) {
+            currentCoroutineContext().ensureActive()
+            val request = buildChatRequest(
+                baseUrl = baseUrl,
+                apiKey = apiKey,
+                requestBody = OllamaChatRequest(
+                    model = normalizedModel,
+                    messages = messages,
+                    stream = true
+                )
+            ) ?: return@withContext OllamaChatStreamResult.Failure("Invalid endpoint")
 
-        return@withContext try {
+            when (val result = executeStreamRequest(request = request, onDelta = onDelta)) {
+                OllamaChatStreamResult.Success -> return@withContext OllamaChatStreamResult.Success
+                is OllamaChatStreamResult.Failure -> {
+                    lastFailure = result.message
+                    val shouldRetry = attempt < MAX_STREAM_RETRIES - 1 && isRetriableFailure(result.message)
+                    if (!shouldRetry) {
+                        return@withContext result
+                    }
+                    Log.w(TAG, "Retrying stream request after failure: ${result.message}")
+                    delay(STREAM_RETRY_DELAY_MS)
+                }
+            }
+            attempt += 1
+        }
+
+        return@withContext OllamaChatStreamResult.Failure(lastFailure)
+    }
+
+    private suspend fun executeStreamRequest(
+        request: Request,
+        onDelta: (String) -> Unit
+    ): OllamaChatStreamResult {
+        return try {
             okHttpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     return@use when (response.code) {
@@ -97,32 +130,70 @@ class OnlineOllamaService(
                 }
 
                 val body = response.body ?: return@use OllamaChatStreamResult.Failure("Online request failed")
+                val source = body.source()
+                val transferBuffer = Buffer()
+                val pendingLineBuffer = StringBuilder()
                 var emitted = false
                 var streamError: String? = null
-                body.source().use { source ->
-                    while (!source.exhausted()) {
-                        val line = source.readUtf8Line() ?: continue
-                        if (line.isBlank()) {
+                var lastRawLine: String? = null
+                var done = false
+
+                while (!source.exhausted()) {
+                    currentCoroutineContext().ensureActive()
+                    val readCount = source.read(transferBuffer, 8_192)
+                    if (readCount <= 0L) {
+                        continue
+                    }
+                    pendingLineBuffer.append(transferBuffer.readUtf8())
+
+                    var newlineIndex = pendingLineBuffer.indexOf("\n")
+                    while (newlineIndex >= 0) {
+                        val rawLine = pendingLineBuffer.substring(0, newlineIndex)
+                        pendingLineBuffer.delete(0, newlineIndex + 1)
+                        if (rawLine == lastRawLine) {
+                            newlineIndex = pendingLineBuffer.indexOf("\n")
                             continue
                         }
-
-                        val chunk = parseChunk(line) ?: continue
-                        val error = chunk.error?.trim().orEmpty()
-                        if (error.isNotEmpty()) {
-                            streamError = error
+                        lastRawLine = rawLine
+                        val parseOutcome = handleStreamLine(
+                            rawLine = rawLine,
+                            onDelta = { delta ->
+                                emitted = true
+                                onDelta(delta)
+                            }
+                        )
+                        if (parseOutcome is StreamLineOutcome.Error) {
+                            streamError = parseOutcome.message
+                            done = true
                             break
                         }
-
-                        val delta = chunk.message?.content.orEmpty().ifBlank {
-                            chunk.response.orEmpty()
-                        }
-                        if (delta.isNotEmpty()) {
-                            emitted = true
-                            onDelta(delta)
-                        }
-
-                        if (chunk.done == true) {
+                        if (parseOutcome is StreamLineOutcome.Done) {
+                            done = true
                             break
+                        }
+                        newlineIndex = pendingLineBuffer.indexOf("\n")
+                    }
+
+                    if (done) {
+                        break
+                    }
+                }
+
+                if (!done && pendingLineBuffer.isNotBlank()) {
+                    val tailLine = pendingLineBuffer.toString()
+                    if (tailLine != lastRawLine) {
+                        when (
+                            val parseOutcome = handleStreamLine(
+                                rawLine = tailLine,
+                                onDelta = { delta ->
+                                    emitted = true
+                                    onDelta(delta)
+                                }
+                            )
+                        ) {
+                            is StreamLineOutcome.Error -> streamError = parseOutcome.message
+                            StreamLineOutcome.Done -> done = true
+                            StreamLineOutcome.Skip -> Unit
                         }
                     }
                 }
@@ -141,8 +212,47 @@ class OnlineOllamaService(
             OllamaChatStreamResult.Failure("Server unreachable")
         } catch (_: IOException) {
             OllamaChatStreamResult.Failure("Server unreachable")
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: Throwable) {
             OllamaChatStreamResult.Failure(error.message ?: "Online request failed")
+        }
+    }
+
+    private fun handleStreamLine(
+        rawLine: String,
+        onDelta: (String) -> Unit
+    ): StreamLineOutcome {
+        val line = rawLine.trim()
+        if (line.isBlank()) {
+            return StreamLineOutcome.Skip
+        }
+
+        val normalized = if (line.startsWith("data:", ignoreCase = true)) {
+            line.removePrefix("data:").trim()
+        } else {
+            line
+        }
+        if (normalized.equals("[DONE]", ignoreCase = true)) {
+            return StreamLineOutcome.Done
+        }
+
+        val chunk = parseChunk(normalized) ?: return StreamLineOutcome.Skip
+        val error = chunk.error?.trim().orEmpty()
+        if (error.isNotEmpty()) {
+            return StreamLineOutcome.Error(error)
+        }
+
+        val delta = chunk.message?.content.orEmpty().ifBlank {
+            chunk.response.orEmpty()
+        }
+        if (delta.isNotEmpty()) {
+            onDelta(delta)
+        }
+        return if (chunk.done == true) {
+            StreamLineOutcome.Done
+        } else {
+            StreamLineOutcome.Skip
         }
     }
 
@@ -150,7 +260,15 @@ class OnlineOllamaService(
         return try {
             okHttpClient.newCall(request).execute().use { response ->
                 when {
-                    response.isSuccessful -> OllamaConnectionResult.Success
+                    response.isSuccessful -> {
+                        val models = parseModelsFromBody(response.body?.string().orEmpty())
+                        if (models.isEmpty()) {
+                            OllamaConnectionResult.NoModelsReturned
+                        } else {
+                            OllamaConnectionResult.Success
+                        }
+                    }
+
                     response.code == 401 || response.code == 403 -> OllamaConnectionResult.InvalidApiKey
                     response.code == 404 -> OllamaConnectionResult.InvalidOllamaUrl
                     else -> OllamaConnectionResult.Failure("Invalid endpoint")
@@ -216,7 +334,7 @@ class OnlineOllamaService(
         return try {
             gson.fromJson(line, OllamaStreamChunk::class.java)
         } catch (_: JsonSyntaxException) {
-            Log.w(TAG, "Skipping non-json chunk")
+            Log.w(TAG, "Skipping malformed chunk")
             null
         }
     }
@@ -261,4 +379,17 @@ class OnlineOllamaService(
         }
         return if (trimmed.endsWith('/')) trimmed else "$trimmed/"
     }
+
+    private fun isRetriableFailure(message: String): Boolean {
+        val normalized = message.lowercase()
+        return "timeout" in normalized ||
+            "unreachable" in normalized ||
+            "connection" in normalized
+    }
+}
+
+private sealed class StreamLineOutcome {
+    data object Skip : StreamLineOutcome()
+    data object Done : StreamLineOutcome()
+    data class Error(val message: String) : StreamLineOutcome()
 }

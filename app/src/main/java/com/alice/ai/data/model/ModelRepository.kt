@@ -3,6 +3,7 @@ package com.alice.ai.data.model
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -28,6 +29,9 @@ enum class ModelPathError {
 class ModelRepository(
     private val appContext: Context
 ) {
+    companion object {
+        private const val TAG = "ModelRepository"
+    }
 
     private val modelsDir: File
         get() = File(appContext.filesDir, "models")
@@ -57,11 +61,13 @@ class ModelRepository(
         val inputStream = try {
             appContext.contentResolver.openInputStream(uri)
         } catch (_: SecurityException) {
+            Log.e(TAG, "Permission denied while opening model uri")
             return ModelPathResult.Failure(
                 ModelPathError.PermissionDenied,
-                "Model file not found"
+                "Permission denied"
             )
         } catch (_: Throwable) {
+            Log.e(TAG, "Failed to open model uri")
             return ModelPathResult.Failure(
                 ModelPathError.CopyFailed,
                 "Model load failure"
@@ -77,6 +83,7 @@ class ModelRepository(
 
         if (!modelsDir.exists() && !modelsDir.mkdirs()) {
             inputStream.close()
+            Log.e(TAG, "Failed to create models directory at ${modelsDir.absolutePath}")
             return ModelPathResult.Failure(
                 ModelPathError.CopyFailed,
                 "Model load failure"
@@ -98,6 +105,7 @@ class ModelRepository(
 
             if (tempFile.length() <= 0L) {
                 tempFile.delete()
+                Log.e(TAG, "Copied model file is empty")
                 return ModelPathResult.Failure(
                     ModelPathError.CopyFailed,
                     "Model load failure"
@@ -109,6 +117,7 @@ class ModelRepository(
             }
             if (!tempFile.renameTo(targetFile)) {
                 tempFile.delete()
+                Log.e(TAG, "Failed to move copied model into final location")
                 return ModelPathResult.Failure(
                     ModelPathError.CopyFailed,
                     "Model load failure"
@@ -121,12 +130,14 @@ class ModelRepository(
             )
         } catch (_: SecurityException) {
             tempFile.delete()
+            Log.e(TAG, "Permission denied while copying model data")
             ModelPathResult.Failure(
                 ModelPathError.PermissionDenied,
-                "Model file not found"
+                "Permission denied"
             )
         } catch (_: Throwable) {
             tempFile.delete()
+            Log.e(TAG, "Unexpected error while copying model data")
             ModelPathResult.Failure(
                 ModelPathError.CopyFailed,
                 "Model load failure"
@@ -143,6 +154,7 @@ class ModelRepository(
         }
         val modelFile = File(filePath)
         if (!modelFile.exists() || !modelFile.isFile) {
+            Log.e(TAG, "Model file not found at $filePath")
             return ModelPathResult.Failure(
                 ModelPathError.ModelFileNotFound,
                 "Model file not found"

@@ -81,10 +81,19 @@ Java_com_alice_ai_data_offline_LlamaJniBridge_nativeGenerateText(
             ? g_loaded_model_path
             : g_loaded_model_path.substr(separator_index + 1);
 
-    std::ostringstream response_stream;
-    response_stream << "Offline native response (" << model_label << "): ";
-    response_stream << tail;
-    const std::string response = response_stream.str();
+    const std::string marker = "Alice:";
+    const size_t marker_pos = tail.rfind(marker);
+    std::string response = marker_pos == std::string::npos
+        ? tail
+        : tail.substr(marker_pos + marker.size());
+    while (!response.empty() && (response.front() == ' ' || response.front() == '\n' || response.front() == '\t')) {
+        response.erase(response.begin());
+    }
+    if (response.empty()) {
+        std::ostringstream response_stream;
+        response_stream << "Model " << model_label << " is loaded, but native inference returned no tokens.";
+        response = response_stream.str();
+    }
     return env->NewStringUTF(response.c_str());
 }
 
