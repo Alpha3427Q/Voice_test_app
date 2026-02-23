@@ -58,9 +58,11 @@ import okhttp3.Request
 import java.io.File
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.TimeUnit
 
 private const val PREFS_NAME = "alice_settings"
 private const val DEFAULT_TTS_URL = "https://lonekirito-asuna3456.hf.space/speak"
+private const val NETWORK_TIMEOUT_MINUTES = 45L
 
 private val STORAGE_PERMISSIONS = arrayOf(
     Manifest.permission.READ_MEDIA_IMAGES,
@@ -99,7 +101,14 @@ private fun AliceApp(
     val settingsRepository = remember { SettingsRepository(prefs) }
     val navController = rememberNavController()
     val scope = rememberCoroutineScope()
-    val httpClient = remember { OkHttpClient() }
+    val httpClient = remember {
+        OkHttpClient.Builder()
+            .connectTimeout(NETWORK_TIMEOUT_MINUTES, TimeUnit.MINUTES)
+            .readTimeout(NETWORK_TIMEOUT_MINUTES, TimeUnit.MINUTES)
+            .writeTimeout(NETWORK_TIMEOUT_MINUTES, TimeUnit.MINUTES)
+            .callTimeout(NETWORK_TIMEOUT_MINUTES, TimeUnit.MINUTES)
+            .build()
+    }
     val mediaPlayerState = remember { mutableStateOf<MediaPlayer?>(null) }
     val uiState by chatViewModel.uiState.collectAsState()
 

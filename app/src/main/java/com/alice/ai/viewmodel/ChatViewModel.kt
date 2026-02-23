@@ -29,6 +29,7 @@ import java.time.Clock
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 
 private const val TAG = "ChatViewModel"
 private const val OFFLINE_PREFIX = "Offline: "
@@ -36,6 +37,7 @@ private const val LEGACY_ONLINE_PREFIX = "Online: "
 private const val DEFAULT_ONLINE_MODEL = "llama3"
 private const val CONTEXT_WINDOW_SIZE = 7
 private const val MAX_STORED_MESSAGES = 200
+private const val OLLAMA_TIMEOUT_MINUTES = 45L
 
 private const val SYSTEM_PROMPT_TEMPLATE =
     "Your name is Alice an AI assistant created by Adwaith also known as Aromal and Alpha. " +
@@ -76,7 +78,14 @@ class ChatViewModel(
 
     private var settingsRepository: SettingsRepository? = null
     private var modelRepository: ModelRepository? = null
-    private val onlineOllamaService = OnlineOllamaService(okHttpClient = okhttp3.OkHttpClient())
+    private val onlineOllamaService = OnlineOllamaService(
+        okHttpClient = okhttp3.OkHttpClient.Builder()
+            .connectTimeout(OLLAMA_TIMEOUT_MINUTES, TimeUnit.MINUTES)
+            .readTimeout(OLLAMA_TIMEOUT_MINUTES, TimeUnit.MINUTES)
+            .writeTimeout(OLLAMA_TIMEOUT_MINUTES, TimeUnit.MINUTES)
+            .callTimeout(OLLAMA_TIMEOUT_MINUTES, TimeUnit.MINUTES)
+            .build()
+    )
     private val offlineLlamaEngine = OfflineLlamaEngine()
     private var statusMessageJob: Job? = null
     private var onlineModelNames: List<String> = listOf(DEFAULT_ONLINE_MODEL)
