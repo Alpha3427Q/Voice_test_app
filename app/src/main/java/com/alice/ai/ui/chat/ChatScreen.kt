@@ -36,7 +36,6 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -52,16 +51,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.withFrameNanos
+import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -102,16 +98,14 @@ fun ChatScreen(
     audioTopBar: (@Composable () -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    val clipboard = LocalClipboardManager.current
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
     var autoScrollEnabled by rememberSaveable { mutableStateOf(true) }
-    var selectedUserMessage by remember { mutableStateOf<ChatMessage?>(null) }
 
     val showStatusCard = activeContextCount > 0 || isGenerating || statusMessage != null || errorMessage != null
 
-    val isNearBottom by remember(listState, messages) {
+    val isNearBottom by remember(listState, messages.size) {
         derivedStateOf {
             if (messages.isEmpty()) {
                 true
@@ -122,13 +116,13 @@ fun ChatScreen(
         }
     }
 
-    val isUserScrollingUp by remember(listState, messages, isNearBottom) {
+    val isUserScrollingUp by remember(listState, messages.size, isNearBottom) {
         derivedStateOf {
             messages.isNotEmpty() && !isNearBottom && listState.isScrollInProgress
         }
     }
 
-    val showScrollToBottomFab by remember(autoScrollEnabled, isNearBottom, messages) {
+    val showScrollToBottomFab by remember(autoScrollEnabled, isNearBottom, messages.size) {
         derivedStateOf {
             messages.isNotEmpty() && (!autoScrollEnabled || !isNearBottom)
         }
@@ -146,34 +140,19 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(messages.size, autoScrollEnabled) {
-        if (autoScrollEnabled && messages.isNotEmpty()) {
-            delay(10L)
-            withFrameNanos { }
+    val scrollSignal = remember(messages, isGenerating, isWaitingForResponse) {
+        val last = messages.lastOrNull()
+        "${messages.size}:${last?.id.orEmpty()}:${last?.content?.length ?: 0}:$isGenerating:$isWaitingForResponse"
+    }
+
+    LaunchedEffect(scrollSignal, autoScrollEnabled) {
+        if (!autoScrollEnabled || messages.isEmpty()) {
+            return@LaunchedEffect
+        }
+        withFrameMillis { }
+        scope.launch {
             listState.animateScrollToItem(messages.lastIndex)
         }
-    }
-
-    val latestMessageFingerprint = remember(messages) {
-        messages.lastOrNull()?.let { "${it.id}:${it.content.length}" }.orEmpty()
-    }
-
-    LaunchedEffect(latestMessageFingerprint, autoScrollEnabled, isGenerating, isWaitingForResponse) {
-        if (autoScrollEnabled && messages.isNotEmpty() && (isGenerating || isWaitingForResponse)) {
-            withFrameNanos { }
-            listState.scrollToItem(messages.lastIndex)
-        }
-    }
-
-    LaunchedEffect(listState, autoScrollEnabled, messages.size) {
-        snapshotFlow { listState.layoutInfo.totalItemsCount }
-            .distinctUntilChanged()
-            .collect {
-                if (autoScrollEnabled && messages.isNotEmpty()) {
-                    withFrameNanos { }
-                    listState.scrollToItem(messages.lastIndex)
-                }
-            }
     }
 
     Box(modifier = modifier.fillMaxSize()) {
@@ -254,7 +233,8 @@ fun ChatScreen(
                             ChatBubble(
                                 message = message,
                                 onReadAloud = onReadAloud,
-                                onUserLongPress = { selectedUserMessage = it }
+                                onDeleteUserMessage = onDeleteUserMessage,
+                                onShareMessage = onShareMessage
                             )
                         }
                     }
@@ -308,47 +288,6 @@ fun ChatScreen(
                     .padding(horizontal = 12.dp, vertical = 8.dp)
             ) {
                 audioTopBar()
-            }
-        }
-    }
-
-    selectedUserMessage?.let { targetMessage ->
-        ModalBottomSheet(
-            onDismissRequest = { selectedUserMessage = null }
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                TextButton(
-                    onClick = {
-                        clipboard.setText(AnnotatedString(targetMessage.content))
-                        selectedUserMessage = null
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Copy")
-                }
-                TextButton(
-                    onClick = {
-                        onDeleteUserMessage(targetMessage.id)
-                        selectedUserMessage = null
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Delete")
-                }
-                TextButton(
-                    onClick = {
-                        onShareMessage(targetMessage.content)
-                        selectedUserMessage = null
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Share")
-                }
             }
         }
     }
@@ -490,11 +429,13 @@ private fun ChatStatusCard(
 private fun ChatBubble(
     message: ChatMessage,
     onReadAloud: (String) -> Unit,
-    onUserLongPress: (ChatMessage) -> Unit
+    onDeleteUserMessage: (String) -> Unit,
+    onShareMessage: (String) -> Unit
 ) {
     val isUser = message.role == ChatRole.User
     val clipboard = LocalClipboardManager.current
     var assistantMenuExpanded by remember { mutableStateOf(false) }
+    var userMenuExpanded by remember { mutableStateOf(false) }
 
     Row(
         modifier = Modifier
@@ -511,7 +452,7 @@ private fun ChatBubble(
             val bubbleModifier = if (isUser) {
                 Modifier.combinedClickable(
                     onClick = {},
-                    onLongClick = { onUserLongPress(message) }
+                    onLongClick = { userMenuExpanded = true }
                 )
             } else {
                 Modifier.combinedClickable(
@@ -560,6 +501,35 @@ private fun ChatBubble(
                             onClick = {
                                 assistantMenuExpanded = false
                                 onReadAloud(message.content)
+                            }
+                        )
+                    }
+                }
+
+                if (isUser) {
+                    DropdownMenu(
+                        expanded = userMenuExpanded,
+                        onDismissRequest = { userMenuExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Copy") },
+                            onClick = {
+                                userMenuExpanded = false
+                                clipboard.setText(AnnotatedString(message.content))
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Delete") },
+                            onClick = {
+                                userMenuExpanded = false
+                                onDeleteUserMessage(message.id)
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Share") },
+                            onClick = {
+                                userMenuExpanded = false
+                                onShareMessage(message.content)
                             }
                         )
                     }

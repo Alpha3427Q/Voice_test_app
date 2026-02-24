@@ -235,7 +235,15 @@ fun parseMarkdownSegments(input: String): List<MarkdownSegment> {
     splitParts.forEachIndexed { index, part ->
         if (index % 2 == 0) {
             val blocks = parseTextBlocks(part)
-            if (blocks.isNotEmpty()) {
+            val hasMeaningfulText = blocks.any { block ->
+                when (block) {
+                    is MarkdownTextBlock.Paragraph -> block.text.isNotBlank()
+                    is MarkdownTextBlock.Heading,
+                    is MarkdownTextBlock.Bullet,
+                    is MarkdownTextBlock.Numbered -> true
+                }
+            }
+            if (hasMeaningfulText) {
                 segments += MarkdownSegment.TextSegment(blocks)
             }
         } else {
