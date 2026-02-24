@@ -1,6 +1,5 @@
 package com.alice.ai.ui.chat
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -249,7 +248,7 @@ fun ChatScreen(
                         }
                     }
 
-                    AnimatedVisibility(
+                    androidx.compose.animation.AnimatedVisibility(
                         visible = isWaitingForResponse,
                         modifier = Modifier
                             .align(Alignment.BottomStart)
@@ -263,7 +262,7 @@ fun ChatScreen(
             }
         }
 
-        AnimatedVisibility(
+        androidx.compose.animation.AnimatedVisibility(
             visible = showScrollToBottomFab,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
