@@ -104,9 +104,19 @@ fun ChatScreen(
     val scope = rememberCoroutineScope()
 
     val showStatusCard = activeContextCount > 0 || isGenerating || statusMessage != null || errorMessage != null
-    val showScrollToBottomFab by remember(listState, messages.size) {
+    val isAtBottom by remember {
         derivedStateOf {
-            messages.isNotEmpty() && listState.canScrollForward
+            val visibleItems = listState.layoutInfo.visibleItemsInfo
+            if (visibleItems.isEmpty()) {
+                false
+            } else {
+                visibleItems.last().index == listState.layoutInfo.totalItemsCount - 1
+            }
+        }
+    }
+    val showScrollToBottomFab by remember(isAtBottom, messages.size) {
+        derivedStateOf {
+            messages.isNotEmpty() && !isAtBottom
         }
     }
 
@@ -118,7 +128,7 @@ fun ChatScreen(
     }
 
     LaunchedEffect(messages.lastOrNull()?.content) {
-        if (messages.isNotEmpty() && !listState.canScrollForward) {
+        if (isAtBottom && messages.isNotEmpty()) {
             withFrameMillis { }
             listState.animateScrollToItem(messages.lastIndex)
         }
