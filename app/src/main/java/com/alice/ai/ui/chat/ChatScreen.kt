@@ -58,6 +58,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -101,9 +102,10 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
-    var autoScrollEnabled by rememberSaveable { mutableStateOf(true) }
+    var stickToBottom by rememberSaveable { mutableStateOf(true) }
 
     val showStatusCard = activeContextCount > 0 || isGenerating || statusMessage != null || errorMessage != null
+    val nearBottomThreshold = 1
 
     val lastVisibleIndex by remember(listState) {
         derivedStateOf {
@@ -116,41 +118,38 @@ fun ChatScreen(
             if (messages.isEmpty()) {
                 true
             } else {
-                lastVisibleIndex >= messages.lastIndex - 1
+                lastVisibleIndex >= (messages.lastIndex - nearBottomThreshold)
             }
         }
     }
 
-    val userIsAwayFromBottom by remember(messages.size, lastVisibleIndex) {
+    val showScrollToBottomFab by remember(isNearBottom, messages.size) {
         derivedStateOf {
-            messages.isNotEmpty() && lastVisibleIndex < messages.lastIndex - 1
+            messages.isNotEmpty() && !isNearBottom
         }
     }
 
-    val showScrollToBottomFab by remember(autoScrollEnabled, isNearBottom, messages.size) {
-        derivedStateOf {
-            messages.isNotEmpty() && (!autoScrollEnabled || !isNearBottom)
-        }
-    }
-
-    LaunchedEffect(listState.isScrollInProgress, userIsAwayFromBottom, isNearBottom) {
-        if (listState.isScrollInProgress && userIsAwayFromBottom) {
-            autoScrollEnabled = false
+    LaunchedEffect(listState.isScrollInProgress, isNearBottom) {
+        if (listState.isScrollInProgress && !isNearBottom) {
+            stickToBottom = false
         } else if (!listState.isScrollInProgress && isNearBottom) {
-            autoScrollEnabled = true
+            stickToBottom = true
         }
     }
 
-    val scrollSignal = remember(messages, isGenerating, isWaitingForResponse) {
+    val latestMessageFingerprint = remember(messages, isGenerating, isWaitingForResponse) {
         val last = messages.lastOrNull()
         "${messages.size}:${last?.id.orEmpty()}:${last?.content?.length ?: 0}:$isGenerating:$isWaitingForResponse"
     }
 
-    LaunchedEffect(scrollSignal, autoScrollEnabled, isNearBottom, listState.isScrollInProgress) {
+    LaunchedEffect(
+        latestMessageFingerprint,
+        stickToBottom,
+        listState.isScrollInProgress
+    ) {
         if (
-            !autoScrollEnabled ||
             messages.isEmpty() ||
-            !isNearBottom ||
+            !stickToBottom ||
             listState.isScrollInProgress
         ) {
             return@LaunchedEffect
@@ -162,11 +161,11 @@ fun ChatScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Color(0xFF050505))
+            .background(Color(0xFF000000))
     ) {
         Scaffold(
             modifier = Modifier.fillMaxSize(),
-            containerColor = Color(0xFF050505),
+            containerColor = Color(0xFF000000),
             topBar = {
                 TopAppBar(
                     title = {
@@ -273,12 +272,12 @@ fun ChatScreen(
             FloatingActionButton(
                 onClick = {
                     if (messages.isEmpty()) {
-                        autoScrollEnabled = true
+                        stickToBottom = true
                         return@FloatingActionButton
                     }
                     scope.launch {
                         listState.animateScrollToItem(messages.lastIndex)
-                        autoScrollEnabled = true
+                        stickToBottom = true
                     }
                 }
             ) {
@@ -471,25 +470,28 @@ private fun ChatBubble(
             }
 
             Box {
-                Surface(
-                    modifier = bubbleModifier.widthIn(max = maxBubbleWidth),
-                    shape = MaterialTheme.shapes.large,
-                    color = if (isUser) {
-                        Color(0xFF2A1E52)
-                    } else {
-                        Color(0xFF1E1E1E)
+                if (isUser) {
+                    Surface(
+                        modifier = bubbleModifier.widthIn(max = maxBubbleWidth),
+                        shape = MaterialTheme.shapes.large,
+                        color = Color(0xFF2F2F2F)
+                    ) {
+                        MarkdownMessage(
+                            text = message.content,
+                            textColor = MaterialTheme.colorScheme.onSurface,
+                            onCodeCopied = {},
+                            modifier = Modifier.padding(16.dp)
+                        )
                     }
-                ) {
-                    val textColor = if (isUser) {
-                        MaterialTheme.colorScheme.onPrimaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    }
+                } else {
                     MarkdownMessage(
                         text = message.content,
-                        textColor = textColor,
+                        textColor = MaterialTheme.colorScheme.onBackground,
                         onCodeCopied = {},
-                        modifier = Modifier.padding(16.dp)
+                        bodyLineHeight = 24.sp,
+                        modifier = bubbleModifier
+                            .widthIn(max = maxBubbleWidth)
+                            .padding(horizontal = 2.dp, vertical = 12.dp)
                     )
                 }
 

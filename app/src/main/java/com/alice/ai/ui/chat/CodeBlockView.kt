@@ -42,7 +42,7 @@ fun CodeBlockView(
         modifier = modifier
             .fillMaxWidth()
             .clip(MaterialTheme.shapes.large)
-            .background(Color(0xFF1E1E1E))
+            .background(Color(0xFF202020))
             .wrapContentHeight()
     ) {
         Column(
@@ -51,6 +51,7 @@ fun CodeBlockView(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .background(Color(0xFF202020))
                     .padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
@@ -79,7 +80,7 @@ fun CodeBlockView(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Color(0xFF121212))
+                    .background(Color(0xFF0D0D0D))
                     .padding(12.dp)
             ) {
                 Box(

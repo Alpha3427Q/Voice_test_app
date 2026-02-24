@@ -25,6 +25,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -52,9 +53,15 @@ fun MarkdownMessage(
     text: String,
     textColor: Color,
     onCodeCopied: () -> Unit,
+    bodyLineHeight: TextUnit = TextUnit.Unspecified,
     modifier: Modifier = Modifier
 ) {
     val segments = remember(text) { parseMarkdownSegments(text) }
+    val bodyTextStyle = if (bodyLineHeight == TextUnit.Unspecified) {
+        MaterialTheme.typography.bodyLarge
+    } else {
+        MaterialTheme.typography.bodyLarge.copy(lineHeight = bodyLineHeight)
+    }
     Column(
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -72,7 +79,8 @@ fun MarkdownMessage(
                 is MarkdownSegment.TextSegment -> {
                     MarkdownTextSegment(
                         blocks = segment.blocks,
-                        textColor = textColor
+                        textColor = textColor,
+                        bodyTextStyle = bodyTextStyle
                     )
                 }
             }
@@ -83,7 +91,8 @@ fun MarkdownMessage(
 @Composable
 private fun MarkdownTextSegment(
     blocks: List<MarkdownTextBlock>,
-    textColor: Color
+    textColor: Color,
+    bodyTextStyle: TextStyle
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -119,7 +128,7 @@ private fun MarkdownTextSegment(
                         InlineMarkdownText(
                             text = block.text,
                             color = textColor,
-                            textStyle = MaterialTheme.typography.bodyLarge,
+                            textStyle = bodyTextStyle,
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -140,7 +149,7 @@ private fun MarkdownTextSegment(
                         InlineMarkdownText(
                             text = block.text,
                             color = textColor,
-                            textStyle = MaterialTheme.typography.bodyLarge,
+                            textStyle = bodyTextStyle,
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -151,7 +160,7 @@ private fun MarkdownTextSegment(
                         InlineMarkdownText(
                             text = block.text,
                             color = textColor,
-                            textStyle = MaterialTheme.typography.bodyLarge
+                            textStyle = bodyTextStyle
                         )
                     } else {
                         Box(modifier = Modifier.padding(vertical = 2.dp))
@@ -303,11 +312,36 @@ private fun parseFencedCodeBlock(rawBlock: String): Pair<String?, String> {
 
     val firstLineEnd = rawBlock.indexOf('\n')
     return if (firstLineEnd >= 0) {
-        val language = rawBlock.substring(0, firstLineEnd).trim().ifBlank { null }
-        val code = rawBlock.substring(firstLineEnd + 1)
-        language to code
+        val firstLine = rawBlock.substring(0, firstLineEnd)
+        val trimmedFirstLine = firstLine.trim()
+        val looksLikeLanguageTag =
+            trimmedFirstLine.isNotEmpty() &&
+                !trimmedFirstLine.contains(' ') &&
+                !trimmedFirstLine.contains('\t') &&
+                trimmedFirstLine.all { ch ->
+                    ch.isLetterOrDigit() || ch == '_' || ch == '-' || ch == '+' || ch == '#' || ch == '.'
+                }
+
+        if (looksLikeLanguageTag) {
+            trimmedFirstLine to rawBlock.substring(firstLineEnd + 1)
+        } else {
+            null to rawBlock
+        }
     } else {
-        rawBlock.trim().ifBlank { null } to ""
+        val singleLine = rawBlock.trim()
+        val looksLikeLanguageTag =
+            singleLine.isNotEmpty() &&
+                !singleLine.contains(' ') &&
+                !singleLine.contains('\t') &&
+                singleLine.all { ch ->
+                    ch.isLetterOrDigit() || ch == '_' || ch == '-' || ch == '+' || ch == '#' || ch == '.'
+                }
+
+        if (looksLikeLanguageTag) {
+            singleLine to ""
+        } else {
+            null to rawBlock
+        }
     }
 }
 
