@@ -239,7 +239,7 @@ fun ChatScreen(
                         }
                     }
 
-                    AnimatedVisibility(
+                    androidx.compose.animation.AnimatedVisibility(
                         visible = isWaitingForResponse,
                         modifier = Modifier
                             .align(Alignment.BottomStart)
