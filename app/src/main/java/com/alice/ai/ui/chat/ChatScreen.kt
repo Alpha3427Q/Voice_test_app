@@ -104,55 +104,24 @@ fun ChatScreen(
     val scope = rememberCoroutineScope()
 
     val showStatusCard = activeContextCount > 0 || isGenerating || statusMessage != null || errorMessage != null
-    val nearBottomThreshold = 1
-
-    val lastVisibleIndex by remember(listState) {
+    val showScrollToBottomFab by remember(listState, messages.size) {
         derivedStateOf {
-            listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            messages.isNotEmpty() && listState.canScrollForward
         }
     }
 
-    val isNearBottom by remember(listState, messages.size) {
-        derivedStateOf {
-            if (messages.isEmpty()) {
-                true
-            } else {
-                lastVisibleIndex >= (messages.lastIndex - nearBottomThreshold)
-            }
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty()) {
+            withFrameMillis { }
+            listState.animateScrollToItem(messages.size - 1)
         }
     }
 
-    val showScrollToBottomFab by remember(isNearBottom, messages.size) {
-        derivedStateOf {
-            messages.isNotEmpty() && !isNearBottom
+    LaunchedEffect(messages.lastOrNull()?.content) {
+        if (messages.isNotEmpty() && !listState.canScrollForward) {
+            withFrameMillis { }
+            listState.animateScrollToItem(messages.lastIndex)
         }
-    }
-
-    val latestMessageFingerprint = remember(messages, isGenerating, isWaitingForResponse) {
-        val last = messages.lastOrNull()
-        "${messages.size}:${last?.id.orEmpty()}:${last?.content?.length ?: 0}:$isGenerating:$isWaitingForResponse"
-    }
-
-    LaunchedEffect(
-        latestMessageFingerprint,
-        isNearBottom,
-        listState.isScrollInProgress,
-        messages.size
-    ) {
-        if (
-            messages.isEmpty() ||
-            !isNearBottom ||
-            listState.isScrollInProgress
-        ) {
-            return@LaunchedEffect
-        }
-        val lastIndex = messages.lastIndex
-        val isLastItemVisible = listState.layoutInfo.visibleItemsInfo.any { it.index == lastIndex }
-        if (!isLastItemVisible && !isNearBottom) {
-            return@LaunchedEffect
-        }
-        withFrameMillis { }
-        listState.animateScrollToItem(lastIndex)
     }
 
     Box(

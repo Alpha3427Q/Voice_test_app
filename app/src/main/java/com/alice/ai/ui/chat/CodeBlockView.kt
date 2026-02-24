@@ -30,6 +30,46 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 
+private val KNOWN_LANGUAGE_PREFIXES = listOf(
+    "javascript",
+    "python",
+    "bash",
+    "java",
+    "json",
+    "cpp",
+    "html",
+    "css",
+    "js",
+    "c"
+)
+
+private fun extractLanguageAndBody(
+    explicitLanguage: String?,
+    rawCode: String
+): Pair<String, String> {
+    val normalized = rawCode.replace("\r\n", "\n")
+    val normalizedBody = normalized.trimStart('\n', '\r').trimEnd()
+
+    if (!explicitLanguage.isNullOrBlank()) {
+        return explicitLanguage.trim().lowercase() to normalizedBody
+    }
+
+    val probe = normalized.trimStart()
+    if (probe.isEmpty()) {
+        return "code" to ""
+    }
+
+    val matchedPrefix = KNOWN_LANGUAGE_PREFIXES.firstOrNull { prefix ->
+        probe.startsWith(prefix, ignoreCase = true)
+    }
+    if (matchedPrefix != null) {
+        val body = probe.substring(matchedPrefix.length).trimStart()
+        return matchedPrefix to body
+    }
+
+    return "code" to normalizedBody
+}
+
 @Composable
 fun CodeBlockView(
     code: String,
@@ -40,27 +80,11 @@ fun CodeBlockView(
     val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
 
-    val rawCode = remember(code, language) {
-        if (language.isNullOrBlank()) {
-            code.replace("\r\n", "\n")
-        } else {
-            "${language.trim()}\n$code".replace("\r\n", "\n")
-        }
-    }
-    val firstNewline = remember(rawCode) { rawCode.indexOf('\n') }
-    val languageLabel = remember(rawCode, firstNewline) {
-        if (firstNewline >= 0) {
-            rawCode.substring(0, firstNewline).trim().ifBlank { "code" }
-        } else {
-            "code"
-        }
-    }
-    val codeBody = remember(rawCode, firstNewline) {
-        if (firstNewline >= 0) {
-            rawCode.substring(firstNewline + 1).trim()
-        } else {
-            rawCode.trim()
-        }
+    val (languageLabel, codeBody) = remember(code, language) {
+        extractLanguageAndBody(
+            explicitLanguage = language,
+            rawCode = code
+        )
     }
 
     Box(
