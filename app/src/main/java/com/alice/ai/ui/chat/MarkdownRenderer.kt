@@ -231,36 +231,56 @@ fun parseMarkdownSegments(input: String): List<MarkdownSegment> {
     }
 
     val segments = mutableListOf<MarkdownSegment>()
-    val splitParts = normalized.split("```")
-    splitParts.forEachIndexed { index, part ->
-        if (index % 2 == 0) {
-            val blocks = parseTextBlocks(part)
-            val hasMeaningfulText = blocks.any { block ->
-                when (block) {
-                    is MarkdownTextBlock.Paragraph -> block.text.isNotBlank()
-                    is MarkdownTextBlock.Heading,
-                    is MarkdownTextBlock.Bullet,
-                    is MarkdownTextBlock.Numbered -> true
-                }
-            }
-            if (hasMeaningfulText) {
-                segments += MarkdownSegment.TextSegment(blocks)
-            }
-        } else {
-            val (language, code) = extractCodeBlock(part)
-            if (code.isNotBlank()) {
-                segments += MarkdownSegment.CodeBlockSegment(
-                    code = code,
-                    language = language
-                )
-            }
+    var cursor = 0
+    while (cursor < normalized.length) {
+        val fenceStart = normalized.indexOf("```", cursor)
+        if (fenceStart < 0) {
+            appendTextSegment(segments, normalized.substring(cursor))
+            break
         }
+
+        if (fenceStart > cursor) {
+            appendTextSegment(segments, normalized.substring(cursor, fenceStart))
+        }
+
+        val codeContentStart = fenceStart + 3
+        val fenceEnd = normalized.indexOf("```", codeContentStart)
+        if (fenceEnd < 0) {
+            appendTextSegment(segments, normalized.substring(fenceStart))
+            break
+        }
+
+        val (language, code) = parseFencedCodeBlock(
+            normalized.substring(codeContentStart, fenceEnd)
+        )
+        if (code.isNotEmpty()) {
+            segments += MarkdownSegment.CodeBlockSegment(code = code, language = language)
+        }
+        cursor = fenceEnd + 3
     }
 
     return if (segments.isEmpty()) {
         listOf(MarkdownSegment.TextSegment(parseTextBlocks(normalized)))
     } else {
         segments
+    }
+}
+
+private fun appendTextSegment(
+    target: MutableList<MarkdownSegment>,
+    rawText: String
+) {
+    val blocks = parseTextBlocks(rawText)
+    val hasMeaningfulText = blocks.any { block ->
+        when (block) {
+            is MarkdownTextBlock.Paragraph -> block.text.isNotBlank()
+            is MarkdownTextBlock.Heading,
+            is MarkdownTextBlock.Bullet,
+            is MarkdownTextBlock.Numbered -> true
+        }
+    }
+    if (hasMeaningfulText) {
+        target += MarkdownSegment.TextSegment(blocks)
     }
 }
 
@@ -272,22 +292,22 @@ private fun parseTextBlocks(input: String): List<MarkdownTextBlock> {
         .map { parseTextBlock(it) }
 }
 
-private fun extractCodeBlock(rawPart: String): Pair<String?, String> {
-    if (rawPart.isEmpty()) {
+private fun parseFencedCodeBlock(rawBlock: String): Pair<String?, String> {
+    if (rawBlock.isEmpty()) {
         return null to ""
     }
 
-    val normalized = rawPart.trimEnd('\n')
-    if (normalized.startsWith("\n")) {
-        return null to normalized.removePrefix("\n")
+    if (rawBlock.startsWith('\n')) {
+        return null to rawBlock.removePrefix("\n")
     }
 
-    val firstLine = normalized.substringBefore('\n')
-    val remaining = normalized.substringAfter('\n', "")
-    return if (remaining.isNotEmpty()) {
-        firstLine.trim().ifBlank { null } to remaining
+    val firstLineEnd = rawBlock.indexOf('\n')
+    return if (firstLineEnd >= 0) {
+        val language = rawBlock.substring(0, firstLineEnd).trim().ifBlank { null }
+        val code = rawBlock.substring(firstLineEnd + 1)
+        language to code
     } else {
-        null to normalized
+        rawBlock.trim().ifBlank { null } to ""
     }
 }
 

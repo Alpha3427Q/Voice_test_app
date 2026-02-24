@@ -3,8 +3,10 @@ package com.alice.ai.ui.chat
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -40,53 +42,59 @@ fun CodeBlockView(
         modifier = modifier
             .fillMaxWidth()
             .clip(MaterialTheme.shapes.large)
-            .background(Color(0xFF101628))
+            .background(Color(0xFF1E1E1E))
             .wrapContentHeight()
-            .padding(12.dp)
     ) {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(end = 40.dp)
+            modifier = Modifier.fillMaxWidth()
         ) {
-            if (!language.isNullOrBlank()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Text(
-                    text = language,
-                    modifier = Modifier.align(Alignment.Start),
+                    text = language?.ifBlank { "code" } ?: "code",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                IconButton(
+                    modifier = Modifier.size(28.dp),
+                    onClick = {
+                        clipboardManager.setText(AnnotatedString(code))
+                        Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
+                        onCopied()
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.ContentCopy,
+                        contentDescription = "Copy code"
+                    )
+                }
             }
 
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
+                    .background(Color(0xFF121212))
+                    .padding(12.dp)
             ) {
-                Text(
-                    text = code.trimEnd(),
-                    modifier = Modifier.padding(top = 6.dp),
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        text = code,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
             }
-        }
-
-        IconButton(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .size(28.dp),
-            onClick = {
-                clipboardManager.setText(AnnotatedString(code))
-                Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
-                onCopied()
-            }
-        ) {
-            Icon(
-                imageVector = Icons.Outlined.ContentCopy,
-                contentDescription = "Copy code"
-            )
         }
     }
 }

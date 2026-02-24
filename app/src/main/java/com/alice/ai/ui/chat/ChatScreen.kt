@@ -6,6 +6,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -105,20 +106,25 @@ fun ChatScreen(
 
     val showStatusCard = activeContextCount > 0 || isGenerating || statusMessage != null || errorMessage != null
 
+    val lastVisibleIndex by remember(listState) {
+        derivedStateOf {
+            listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+        }
+    }
+
     val isNearBottom by remember(listState, messages.size) {
         derivedStateOf {
             if (messages.isEmpty()) {
                 true
             } else {
-                val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
                 lastVisibleIndex >= messages.lastIndex - 1
             }
         }
     }
 
-    val isUserScrollingUp by remember(listState, messages.size, isNearBottom) {
+    val userIsAwayFromBottom by remember(messages.size, lastVisibleIndex) {
         derivedStateOf {
-            messages.isNotEmpty() && !isNearBottom && listState.isScrollInProgress
+            messages.isNotEmpty() && lastVisibleIndex < messages.lastIndex - 1
         }
     }
 
@@ -128,14 +134,10 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(isUserScrollingUp) {
-        if (isUserScrollingUp) {
+    LaunchedEffect(listState.isScrollInProgress, userIsAwayFromBottom, isNearBottom) {
+        if (listState.isScrollInProgress && userIsAwayFromBottom) {
             autoScrollEnabled = false
-        }
-    }
-
-    LaunchedEffect(isNearBottom, isUserScrollingUp) {
-        if (!isUserScrollingUp && isNearBottom) {
+        } else if (!listState.isScrollInProgress && isNearBottom) {
             autoScrollEnabled = true
         }
     }
@@ -145,19 +147,27 @@ fun ChatScreen(
         "${messages.size}:${last?.id.orEmpty()}:${last?.content?.length ?: 0}:$isGenerating:$isWaitingForResponse"
     }
 
-    LaunchedEffect(scrollSignal, autoScrollEnabled) {
-        if (!autoScrollEnabled || messages.isEmpty()) {
+    LaunchedEffect(scrollSignal, autoScrollEnabled, isNearBottom, listState.isScrollInProgress) {
+        if (
+            !autoScrollEnabled ||
+            messages.isEmpty() ||
+            !isNearBottom ||
+            listState.isScrollInProgress
+        ) {
             return@LaunchedEffect
         }
         withFrameMillis { }
-        scope.launch {
-            listState.animateScrollToItem(messages.lastIndex)
-        }
+        listState.animateScrollToItem(messages.lastIndex)
     }
 
-    Box(modifier = modifier.fillMaxSize()) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color(0xFF050505))
+    ) {
         Scaffold(
             modifier = Modifier.fillMaxSize(),
+            containerColor = Color(0xFF050505),
             topBar = {
                 TopAppBar(
                     title = {
@@ -239,7 +249,7 @@ fun ChatScreen(
                         }
                     }
 
-                    androidx.compose.animation.AnimatedVisibility(
+                    AnimatedVisibility(
                         visible = isWaitingForResponse,
                         modifier = Modifier
                             .align(Alignment.BottomStart)
@@ -468,7 +478,7 @@ private fun ChatBubble(
                     color = if (isUser) {
                         Color(0xFF2A1E52)
                     } else {
-                        Color(0xFF1A2338)
+                        Color(0xFF1E1E1E)
                     }
                 ) {
                     val textColor = if (isUser) {
@@ -480,7 +490,7 @@ private fun ChatBubble(
                         text = message.content,
                         textColor = textColor,
                         onCodeCopied = {},
-                        modifier = Modifier.padding(12.dp)
+                        modifier = Modifier.padding(16.dp)
                     )
                 }
 
