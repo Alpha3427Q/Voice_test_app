@@ -11,6 +11,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -46,7 +51,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.alice.ai.data.settings.SettingsRepository
 import com.alice.ai.data.settings.StoredSettings
-import com.alice.ai.ui.chat.AudioPlayerBottomSheet
+import com.alice.ai.ui.chat.AudioTopBar
 import com.alice.ai.ui.chat.ChatScreen
 import com.alice.ai.ui.history.ChatHistoryScreen
 import com.alice.ai.ui.settings.SettingsScreen
@@ -293,7 +298,27 @@ private fun AliceApp(
                         context.startActivity(Intent.createChooser(shareIntent, "Share message"))
                     },
                     onHistoryClick = { navController.navigate(HISTORY_ROUTE) },
-                    onNewChatClick = chatViewModel::startNewChat
+                    onNewChatClick = chatViewModel::startNewChat,
+                    audioTopBar = {
+                        AnimatedVisibility(
+                            visible = currentTtsFile != null,
+                            enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
+                            exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut()
+                        ) {
+                            val file = currentTtsFile
+                            if (file != null) {
+                                AudioTopBar(
+                                    mediaUrl = Uri.fromFile(file).toString(),
+                                    onDismissRequest = {
+                                        file.delete()
+                                        if (currentTtsFile == file) {
+                                            currentTtsFile = null
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
                 )
             }
 
@@ -374,18 +399,6 @@ private fun AliceApp(
                 )
             }
         }
-    }
-
-    currentTtsFile?.let { file ->
-        AudioPlayerBottomSheet(
-            mediaUrl = Uri.fromFile(file).toString(),
-            onDismissRequest = {
-                file.delete()
-                if (currentTtsFile == file) {
-                    currentTtsFile = null
-                }
-            }
-        )
     }
 }
 

@@ -2,15 +2,15 @@ package com.alice.ai.ui.chat
 
 import android.widget.Toast
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ContentCopy
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -41,47 +41,56 @@ fun CodeBlockView(
         color = Color(0xFF101628),
         tonalElevation = 4.dp
     ) {
-        Column(
-            modifier = Modifier.fillMaxWidth()
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .wrapContentHeight()
+                .padding(12.dp)
         ) {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                    .padding(end = 40.dp)
             ) {
-                Text(
-                    text = language?.ifBlank { "code" } ?: "code",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                IconButton(
-                    onClick = {
-                        clipboardManager.setText(AnnotatedString(code))
-                        Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
-                        onCopied()
-                    }
+                if (!language.isNullOrBlank()) {
+                    Text(
+                        text = language,
+                        modifier = Modifier.align(Alignment.Start),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
                 ) {
-                    Icon(
-                        imageVector = Icons.Outlined.ContentCopy,
-                        contentDescription = "Copy code"
+                    Text(
+                        text = code.trimEnd(),
+                        modifier = Modifier.padding(top = 6.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                 }
             }
 
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-            Text(
-                text = code.trimEnd(),
+            IconButton(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                style = MaterialTheme.typography.bodyMedium,
-                fontFamily = FontFamily.Monospace,
-                color = MaterialTheme.colorScheme.onSurface
-            )
+                    .align(Alignment.TopEnd)
+                    .size(28.dp),
+                onClick = {
+                    clipboardManager.setText(AnnotatedString(code))
+                    Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
+                    onCopied()
+                }
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.ContentCopy,
+                    contentDescription = "Copy code"
+                )
+            }
         }
     }
 }

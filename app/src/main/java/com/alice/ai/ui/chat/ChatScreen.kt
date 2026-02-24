@@ -9,12 +9,14 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -50,11 +52,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -92,6 +99,7 @@ fun ChatScreen(
     onShareMessage: (String) -> Unit,
     onHistoryClick: () -> Unit,
     onNewChatClick: () -> Unit,
+    audioTopBar: (@Composable () -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val clipboard = LocalClipboardManager.current
@@ -101,48 +109,71 @@ fun ChatScreen(
     var autoScrollEnabled by rememberSaveable { mutableStateOf(true) }
     var selectedUserMessage by remember { mutableStateOf<ChatMessage?>(null) }
 
-    val visibleMessages = remember(messages, isWaitingForResponse) {
-        messages.filterNot { message ->
-            isWaitingForResponse &&
-                message.role == ChatRole.Assistant &&
-                message.content.isBlank()
-        }
-    }
     val showStatusCard = activeContextCount > 0 || isGenerating || statusMessage != null || errorMessage != null
-    val showSiriOrb = isWaitingForResponse
-    val totalItems = visibleMessages.size +
-        (if (showStatusCard) 1 else 0) +
-        (if (showSiriOrb) 1 else 0)
-    val streamUpdateKey = remember(visibleMessages) {
-        visibleMessages.lastOrNull()?.let { "${it.id}:${it.content.length}" }.orEmpty()
-    }
 
-    val isAtBottom by remember(listState, totalItems) {
+    val isNearBottom by remember(listState, messages) {
         derivedStateOf {
-            if (totalItems <= 0) {
+            if (messages.isEmpty()) {
                 true
             } else {
-                val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-                lastVisible >= totalItems - 1
+                val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+                lastVisibleIndex >= messages.lastIndex - 1
             }
         }
     }
 
-    val showScrollToBottomButton = !autoScrollEnabled && !isAtBottom && totalItems > 0
-
-    LaunchedEffect(streamUpdateKey, isGenerating, isWaitingForResponse, autoScrollEnabled, totalItems) {
-        if (autoScrollEnabled && totalItems > 0 && (isGenerating || isWaitingForResponse || visibleMessages.isNotEmpty())) {
-            listState.animateScrollToItem(totalItems - 1)
+    val isUserScrollingUp by remember(listState, messages, isNearBottom) {
+        derivedStateOf {
+            messages.isNotEmpty() && !isNearBottom && listState.isScrollInProgress
         }
     }
 
-    LaunchedEffect(listState.isScrollInProgress, isAtBottom) {
-        if (listState.isScrollInProgress && !isAtBottom) {
+    val showScrollToBottomFab by remember(autoScrollEnabled, isNearBottom, messages) {
+        derivedStateOf {
+            messages.isNotEmpty() && (!autoScrollEnabled || !isNearBottom)
+        }
+    }
+
+    LaunchedEffect(isUserScrollingUp) {
+        if (isUserScrollingUp) {
             autoScrollEnabled = false
         }
-        if (isAtBottom) {
+    }
+
+    LaunchedEffect(isNearBottom, isUserScrollingUp) {
+        if (!isUserScrollingUp && isNearBottom) {
             autoScrollEnabled = true
         }
+    }
+
+    LaunchedEffect(messages.size, autoScrollEnabled) {
+        if (autoScrollEnabled && messages.isNotEmpty()) {
+            delay(10L)
+            withFrameNanos { }
+            listState.animateScrollToItem(messages.lastIndex)
+        }
+    }
+
+    val latestMessageFingerprint = remember(messages) {
+        messages.lastOrNull()?.let { "${it.id}:${it.content.length}" }.orEmpty()
+    }
+
+    LaunchedEffect(latestMessageFingerprint, autoScrollEnabled, isGenerating, isWaitingForResponse) {
+        if (autoScrollEnabled && messages.isNotEmpty() && (isGenerating || isWaitingForResponse)) {
+            withFrameNanos { }
+            listState.scrollToItem(messages.lastIndex)
+        }
+    }
+
+    LaunchedEffect(listState, autoScrollEnabled, messages.size) {
+        snapshotFlow { listState.layoutInfo.totalItemsCount }
+            .distinctUntilChanged()
+            .collect {
+                if (autoScrollEnabled && messages.isNotEmpty()) {
+                    withFrameNanos { }
+                    listState.scrollToItem(messages.lastIndex)
+                }
+            }
     }
 
     Box(modifier = modifier.fillMaxSize()) {
@@ -189,58 +220,61 @@ fun ChatScreen(
                 )
             }
         ) { innerPadding ->
-            LazyColumn(
-                state = listState,
+            Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding)
-                    .padding(horizontal = 12.dp),
-                contentPadding = PaddingValues(vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 if (showStatusCard) {
-                    item(key = "status") {
-                        ChatStatusCard(
-                            contextSize = activeContextCount,
-                            isGenerating = isGenerating,
-                            statusMessage = statusMessage,
-                            errorMessage = errorMessage,
-                            onClearError = onClearError
-                        )
-                    }
-                }
-
-                items(items = visibleMessages, key = { it.id }) { message ->
-                    ChatBubble(
-                        message = message,
-                        onReadAloud = onReadAloud,
-                        onUserLongPress = { selectedUserMessage = it }
+                    ChatStatusCard(
+                        contextSize = activeContextCount,
+                        isGenerating = isGenerating,
+                        statusMessage = statusMessage,
+                        errorMessage = errorMessage,
+                        onClearError = onClearError,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp)
                     )
                 }
 
-                if (showSiriOrb) {
-                    item(key = "siri_orb") {
-                        AnimatedVisibility(
-                            visible = true,
-                            enter = fadeIn() + scaleIn(),
-                            exit = fadeOut() + scaleOut()
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(start = 16.dp, top = 8.dp),
-                                horizontalArrangement = Arrangement.Start
-                            ) {
-                                SiriOrb(size = 32.dp)
-                            }
+                Box(modifier = Modifier.fillMaxSize()) {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 12.dp),
+                        contentPadding = PaddingValues(vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(
+                            items = messages,
+                            key = { it.id }
+                        ) { message ->
+                            ChatBubble(
+                                message = message,
+                                onReadAloud = onReadAloud,
+                                onUserLongPress = { selectedUserMessage = it }
+                            )
                         }
+                    }
+
+                    AnimatedVisibility(
+                        visible = isWaitingForResponse,
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(start = 28.dp, bottom = 12.dp),
+                        enter = fadeIn() + scaleIn(),
+                        exit = fadeOut() + scaleOut()
+                    ) {
+                        SiriOrb(size = 32.dp)
                     }
                 }
             }
         }
 
         AnimatedVisibility(
-            visible = showScrollToBottomButton,
+            visible = showScrollToBottomFab,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(end = 20.dp, bottom = 84.dp),
@@ -249,11 +283,13 @@ fun ChatScreen(
         ) {
             FloatingActionButton(
                 onClick = {
-                    autoScrollEnabled = true
+                    if (messages.isEmpty()) {
+                        autoScrollEnabled = true
+                        return@FloatingActionButton
+                    }
                     scope.launch {
-                        if (totalItems > 0) {
-                            listState.animateScrollToItem(totalItems - 1)
-                        }
+                        listState.animateScrollToItem(messages.lastIndex)
+                        autoScrollEnabled = true
                     }
                 }
             ) {
@@ -261,6 +297,17 @@ fun ChatScreen(
                     imageVector = Icons.Outlined.ArrowDownward,
                     contentDescription = "Scroll to bottom"
                 )
+            }
+        }
+
+        if (audioTopBar != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                audioTopBar()
             }
         }
     }
@@ -389,10 +436,11 @@ private fun ChatStatusCard(
     isGenerating: Boolean,
     statusMessage: String?,
     errorMessage: String?,
-    onClearError: () -> Unit
+    onClearError: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier,
         shape = MaterialTheme.shapes.medium,
         tonalElevation = 1.dp
     ) {
@@ -444,68 +492,77 @@ private fun ChatBubble(
     onReadAloud: (String) -> Unit,
     onUserLongPress: (ChatMessage) -> Unit
 ) {
-    val isAssistant = message.role == ChatRole.Assistant
+    val isUser = message.role == ChatRole.User
     val clipboard = LocalClipboardManager.current
     var assistantMenuExpanded by remember { mutableStateOf(false) }
-    val alignment = if (isAssistant) Alignment.CenterStart else Alignment.CenterEnd
 
-    Box(
-        modifier = Modifier.fillMaxWidth(),
-        contentAlignment = alignment
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                start = if (isUser) 64.dp else 16.dp,
+                end = if (isUser) 16.dp else 64.dp
+            ),
+        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
     ) {
-        Box {
-            val bubbleModifier = if (isAssistant) {
-                Modifier.combinedClickable(
-                    onClick = {},
-                    onLongClick = { assistantMenuExpanded = true }
-                )
-            } else {
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val maxBubbleWidth = maxWidth * if (isUser) 0.80f else 0.85f
+
+            val bubbleModifier = if (isUser) {
                 Modifier.combinedClickable(
                     onClick = {},
                     onLongClick = { onUserLongPress(message) }
                 )
-            }
-
-            Surface(
-                modifier = bubbleModifier.widthIn(max = 360.dp),
-                shape = MaterialTheme.shapes.large,
-                color = if (isAssistant) {
-                    MaterialTheme.colorScheme.surfaceVariant
-                } else {
-                    MaterialTheme.colorScheme.primaryContainer
-                }
-            ) {
-                val textColor = if (isAssistant) {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                } else {
-                    MaterialTheme.colorScheme.onPrimaryContainer
-                }
-                MarkdownMessage(
-                    text = message.content,
-                    textColor = textColor,
-                    onCodeCopied = {}
+            } else {
+                Modifier.combinedClickable(
+                    onClick = {},
+                    onLongClick = { assistantMenuExpanded = true }
                 )
             }
 
-            if (isAssistant) {
-                DropdownMenu(
-                    expanded = assistantMenuExpanded,
-                    onDismissRequest = { assistantMenuExpanded = false }
+            Box {
+                Surface(
+                    modifier = bubbleModifier.widthIn(max = maxBubbleWidth),
+                    shape = MaterialTheme.shapes.large,
+                    color = if (isUser) {
+                        Color(0xFF2A1E52)
+                    } else {
+                        Color(0xFF1A2338)
+                    }
                 ) {
-                    DropdownMenuItem(
-                        text = { Text("Copy") },
-                        onClick = {
-                            assistantMenuExpanded = false
-                            clipboard.setText(AnnotatedString(message.content))
-                        }
+                    val textColor = if (isUser) {
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                    MarkdownMessage(
+                        text = message.content,
+                        textColor = textColor,
+                        onCodeCopied = {},
+                        modifier = Modifier.padding(12.dp)
                     )
-                    DropdownMenuItem(
-                        text = { Text("Read Aloud") },
-                        onClick = {
-                            assistantMenuExpanded = false
-                            onReadAloud(message.content)
-                        }
-                    )
+                }
+
+                if (!isUser) {
+                    DropdownMenu(
+                        expanded = assistantMenuExpanded,
+                        onDismissRequest = { assistantMenuExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Copy") },
+                            onClick = {
+                                assistantMenuExpanded = false
+                                clipboard.setText(AnnotatedString(message.content))
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Read Aloud") },
+                            onClick = {
+                                assistantMenuExpanded = false
+                                onReadAloud(message.content)
+                            }
+                        )
+                    }
                 }
             }
         }
