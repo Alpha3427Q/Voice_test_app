@@ -19,6 +19,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -38,6 +39,30 @@ fun CodeBlockView(
 ) {
     val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
+
+    val rawCode = remember(code, language) {
+        if (language.isNullOrBlank()) {
+            code.replace("\r\n", "\n")
+        } else {
+            "${language.trim()}\n$code".replace("\r\n", "\n")
+        }
+    }
+    val firstNewline = remember(rawCode) { rawCode.indexOf('\n') }
+    val languageLabel = remember(rawCode, firstNewline) {
+        if (firstNewline >= 0) {
+            rawCode.substring(0, firstNewline).trim().ifBlank { "code" }
+        } else {
+            "code"
+        }
+    }
+    val codeBody = remember(rawCode, firstNewline) {
+        if (firstNewline >= 0) {
+            rawCode.substring(firstNewline + 1).trim()
+        } else {
+            rawCode.trim()
+        }
+    }
+
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -57,7 +82,7 @@ fun CodeBlockView(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = language?.ifBlank { "code" } ?: "code",
+                    text = languageLabel,
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -65,7 +90,7 @@ fun CodeBlockView(
                 IconButton(
                     modifier = Modifier.size(28.dp),
                     onClick = {
-                        clipboardManager.setText(AnnotatedString(code))
+                        clipboardManager.setText(AnnotatedString(codeBody))
                         Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
                         onCopied()
                     }
@@ -89,7 +114,7 @@ fun CodeBlockView(
                         .horizontalScroll(rememberScrollState())
                 ) {
                     Text(
-                        text = code,
+                        text = codeBody,
                         style = MaterialTheme.typography.bodyMedium,
                         fontFamily = FontFamily.Monospace,
                         color = MaterialTheme.colorScheme.onSurface

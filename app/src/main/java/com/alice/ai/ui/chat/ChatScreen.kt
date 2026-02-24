@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowDropDown
@@ -36,10 +37,11 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -49,7 +51,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Alignment
@@ -102,8 +103,6 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
-    var stickToBottom by rememberSaveable { mutableStateOf(true) }
-
     val showStatusCard = activeContextCount > 0 || isGenerating || statusMessage != null || errorMessage != null
     val nearBottomThreshold = 1
 
@@ -129,14 +128,6 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(listState.isScrollInProgress, isNearBottom) {
-        if (listState.isScrollInProgress && !isNearBottom) {
-            stickToBottom = false
-        } else if (!listState.isScrollInProgress && isNearBottom) {
-            stickToBottom = true
-        }
-    }
-
     val latestMessageFingerprint = remember(messages, isGenerating, isWaitingForResponse) {
         val last = messages.lastOrNull()
         "${messages.size}:${last?.id.orEmpty()}:${last?.content?.length ?: 0}:$isGenerating:$isWaitingForResponse"
@@ -144,18 +135,24 @@ fun ChatScreen(
 
     LaunchedEffect(
         latestMessageFingerprint,
-        stickToBottom,
-        listState.isScrollInProgress
+        isNearBottom,
+        listState.isScrollInProgress,
+        messages.size
     ) {
         if (
             messages.isEmpty() ||
-            !stickToBottom ||
+            !isNearBottom ||
             listState.isScrollInProgress
         ) {
             return@LaunchedEffect
         }
+        val lastIndex = messages.lastIndex
+        val isLastItemVisible = listState.layoutInfo.visibleItemsInfo.any { it.index == lastIndex }
+        if (!isLastItemVisible && !isNearBottom) {
+            return@LaunchedEffect
+        }
         withFrameMillis { }
-        listState.animateScrollToItem(messages.lastIndex)
+        listState.animateScrollToItem(lastIndex)
     }
 
     Box(
@@ -228,9 +225,7 @@ fun ChatScreen(
                 Box(modifier = Modifier.fillMaxSize()) {
                     LazyColumn(
                         state = listState,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(horizontal = 12.dp),
+                        modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(vertical = 12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
@@ -272,12 +267,10 @@ fun ChatScreen(
             FloatingActionButton(
                 onClick = {
                     if (messages.isEmpty()) {
-                        stickToBottom = true
                         return@FloatingActionButton
                     }
                     scope.launch {
                         listState.animateScrollToItem(messages.lastIndex)
-                        stickToBottom = true
                     }
                 }
             ) {
@@ -349,29 +342,54 @@ private fun ChatInputBar(
     onSendClick: () -> Unit,
     isGenerating: Boolean
 ) {
-    Surface(tonalElevation = 4.dp) {
+    Surface(
+        color = Color(0xFF000000),
+        tonalElevation = 0.dp
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.Bottom
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            OutlinedTextField(
-                value = inputText,
-                onValueChange = onInputTextChange,
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("Message Alice...") },
-                maxLines = 4
-            )
-            IconButton(
-                onClick = onSendClick,
-                enabled = inputText.isNotBlank() && !isGenerating
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = Color(0xFF2F2F2F),
+                shape = RoundedCornerShape(24.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Outlined.Send,
-                    contentDescription = "Send"
-                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextField(
+                        value = inputText,
+                        onValueChange = onInputTextChange,
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("Message Alice...") },
+                        maxLines = 4,
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            disabledContainerColor = Color.Transparent,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                            disabledIndicatorColor = Color.Transparent,
+                            cursorColor = MaterialTheme.colorScheme.onSurface
+                        )
+                    )
+                    IconButton(
+                        onClick = onSendClick,
+                        enabled = inputText.isNotBlank() && !isGenerating
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Send,
+                            contentDescription = "Send",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
             }
         }
     }
@@ -449,8 +467,8 @@ private fun ChatBubble(
         modifier = Modifier
             .fillMaxWidth()
             .padding(
-                start = if (isUser) 64.dp else 16.dp,
-                end = if (isUser) 16.dp else 64.dp
+                start = if (isUser) 56.dp else 0.dp,
+                end = if (isUser) 0.dp else 0.dp
             ),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
     ) {
@@ -472,8 +490,8 @@ private fun ChatBubble(
             Box {
                 if (isUser) {
                     Surface(
-                        modifier = bubbleModifier.widthIn(max = maxBubbleWidth),
-                        shape = MaterialTheme.shapes.large,
+                        modifier = bubbleModifier.widthIn(max = maxBubbleWidth).align(Alignment.CenterEnd),
+                        shape = RoundedCornerShape(20.dp),
                         color = Color(0xFF2F2F2F)
                     ) {
                         MarkdownMessage(
@@ -490,8 +508,8 @@ private fun ChatBubble(
                         onCodeCopied = {},
                         bodyLineHeight = 24.sp,
                         modifier = bubbleModifier
-                            .widthIn(max = maxBubbleWidth)
-                            .padding(horizontal = 2.dp, vertical = 12.dp)
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 12.dp)
                     )
                 }
 
