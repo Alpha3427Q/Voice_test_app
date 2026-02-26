@@ -262,6 +262,7 @@ private fun AliceApp(
                     onModelDropdownOpened = chatViewModel::onModelDropdownOpened,
                     onUploadClick = { uploadLauncher.launch("*/*") },
                     onSendClick = chatViewModel::sendMessage,
+                    onStopGeneration = chatViewModel::stopGeneration,
                     onClearError = chatViewModel::clearError,
                     onReadAloud = { text ->
                         val safeText = text.trim()

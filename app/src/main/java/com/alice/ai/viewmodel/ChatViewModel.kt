@@ -370,29 +370,37 @@ class ChatViewModel(
 
         viewModelScope.launch {
             persistMessage(
-                sessionId = state.currentSessionId,
+                sessionId = _uiState.value.currentSessionId,
                 message = userMessage
             )
-            generationJob?.cancel()
-            generationJob = launch {
-                val stateAtStart = _uiState.value
-                val contextWindow = stateAtStart.messages.takeLast(CONTEXT_WINDOW_SIZE)
-                val systemPrompt = buildDynamicSystemPrompt()
+        }
 
-                when (stateAtStart.mode) {
-                    EngineMode.Online -> generateOnlineReplyStreaming(
-                        stateAtStart = stateAtStart,
-                        contextWindow = contextWindow,
-                        systemPrompt = systemPrompt
-                    )
+        generationJob?.cancel()
+        generationJob = viewModelScope.launch {
+            val stateAtStart = _uiState.value
+            val contextWindow = stateAtStart.messages.takeLast(CONTEXT_WINDOW_SIZE)
+            val systemPrompt = buildDynamicSystemPrompt()
 
-                    EngineMode.Offline -> generateOfflineReply(
-                        contextWindow = contextWindow,
-                        systemPrompt = systemPrompt
-                    )
-                }
+            when (stateAtStart.mode) {
+                EngineMode.Online -> generateOnlineReplyStreaming(
+                    stateAtStart = stateAtStart,
+                    contextWindow = contextWindow,
+                    systemPrompt = systemPrompt
+                )
+
+                EngineMode.Offline -> generateOfflineReply(
+                    contextWindow = contextWindow,
+                    systemPrompt = systemPrompt
+                )
             }
         }
+    }
+
+    fun stopGeneration() {
+        generationJob?.cancel()
+        generationJob = null
+        _uiState.update { it.copy(isGenerating = false, isWaitingForResponse = false) }
+        _isWaitingForResponse.value = false
     }
 
     fun deleteUserMessage(messageId: String) {

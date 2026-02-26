@@ -101,14 +101,29 @@ private fun MarkdownTextSegment(
         blocks.forEach { block ->
             when (block) {
                 is MarkdownTextBlock.Heading -> {
+                    val headingStyle = when (block.level) {
+                        1 -> MaterialTheme.typography.titleLarge.copy(
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        2 -> MaterialTheme.typography.titleMedium.copy(
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        3 -> MaterialTheme.typography.titleMedium.copy(
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        else -> MaterialTheme.typography.titleSmall.copy(
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
                     InlineMarkdownText(
                         text = block.text,
                         color = textColor,
-                        textStyle = MaterialTheme.typography.titleMedium.copy(
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.SemiBold
-                        ),
-                        modifier = Modifier.padding(top = 8.dp)
+                        textStyle = headingStyle,
+                        modifier = Modifier.padding(top = 8.dp, bottom = 6.dp)
                     )
                 }
 
@@ -297,8 +312,7 @@ private fun parseTextBlocks(input: String): List<MarkdownTextBlock> {
     if (input.isEmpty()) {
         return emptyList()
     }
-    return input.split('\n')
-        .map { parseTextBlock(it) }
+    return input.split('\n').map { parseTextBlock(it) }
 }
 
 private fun parseFencedCodeBlock(rawBlock: String): Pair<String?, String> {
@@ -351,23 +365,11 @@ private fun parseTextBlock(line: String): MarkdownTextBlock {
         return MarkdownTextBlock.Paragraph("")
     }
 
-    if (trimmed.startsWith("### ")) {
-        return MarkdownTextBlock.Heading(
-            level = 3,
-            text = trimmed.removePrefix("### ").trim()
-        )
-    }
-    if (trimmed.startsWith("## ")) {
-        return MarkdownTextBlock.Heading(
-            level = 2,
-            text = trimmed.removePrefix("## ").trim()
-        )
-    }
-    if (trimmed.startsWith("# ")) {
-        return MarkdownTextBlock.Heading(
-            level = 1,
-            text = trimmed.removePrefix("# ").trim()
-        )
+    val headingMatch = Regex("""^(#{1,4})\s+(.*)$""").find(trimmed)
+    if (headingMatch != null) {
+        val level = headingMatch.groupValues[1].length.coerceIn(1, 4)
+        val text = headingMatch.groupValues[2].trim()
+        return MarkdownTextBlock.Heading(level = level, text = text)
     }
     if (trimmed.startsWith("- ")) {
         return MarkdownTextBlock.Bullet(text = trimmed.removePrefix("- ").trim())

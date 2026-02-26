@@ -29,6 +29,7 @@ import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Send
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -91,6 +92,7 @@ fun ChatScreen(
     onModelDropdownOpened: () -> Unit,
     onUploadClick: () -> Unit,
     onSendClick: () -> Unit,
+    onStopGeneration: () -> Unit,
     onClearError: () -> Unit,
     onReadAloud: (String) -> Unit,
     onDeleteUserMessage: (String) -> Unit,
@@ -123,14 +125,14 @@ fun ChatScreen(
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
             withFrameMillis { }
-            listState.animateScrollToItem(messages.size - 1)
+            listState.animateScrollToItem(messages.size - 1, scrollOffset = 10000)
         }
     }
 
     LaunchedEffect(messages.lastOrNull()?.content) {
         if (isAtBottom && messages.isNotEmpty()) {
             withFrameMillis { }
-            listState.animateScrollToItem(messages.lastIndex)
+            listState.animateScrollToItem(messages.lastIndex, scrollOffset = 10000)
         }
     }
 
@@ -179,6 +181,7 @@ fun ChatScreen(
                     inputText = inputText,
                     onInputTextChange = onInputTextChange,
                     onSendClick = onSendClick,
+                    onStopClick = onStopGeneration,
                     isGenerating = isGenerating
                 )
             }
@@ -319,6 +322,7 @@ private fun ChatInputBar(
     inputText: String,
     onInputTextChange: (String) -> Unit,
     onSendClick: () -> Unit,
+    onStopClick: () -> Unit,
     isGenerating: Boolean
 ) {
     Surface(
@@ -359,12 +363,12 @@ private fun ChatInputBar(
                         )
                     )
                     IconButton(
-                        onClick = onSendClick,
-                        enabled = inputText.isNotBlank() && !isGenerating
+                        onClick = if (isGenerating) onStopClick else onSendClick,
+                        enabled = if (isGenerating) true else inputText.isNotBlank()
                     ) {
                         Icon(
-                            imageVector = Icons.Outlined.Send,
-                            contentDescription = "Send",
+                            imageVector = if (isGenerating) Icons.Filled.Stop else Icons.Outlined.Send,
+                            contentDescription = if (isGenerating) "Stop" else "Send",
                             tint = MaterialTheme.colorScheme.onSurface
                         )
                     }
